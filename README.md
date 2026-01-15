@@ -117,6 +117,8 @@ The code is organized as follows:
 
 See [DeePMD-kit Contributing Guide](CONTRIBUTING.md) to become a contributor! 🤓
 
+Use this command to generate json schema: `python -c "from deepmd.utils.argcheck import gen_json_schema; import json; json.dump(json.loads(gen_json_schema(multi_task=False)), open('./deepmd_json_schema.json', 'w'), indent=2)"`
+
 [1]: https://arxiv.org/abs/1707.01478
 [2]: https://journals.aps.org/prl/abstract/10.1103/PhysRevLett.120.143001
 [3]: https://arxiv.org/abs/1805.09003

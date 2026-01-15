@@ -1,0 +1,16 @@
+# Generated benchmark artifacts (regenerate with run_bench.sh / prep_models.py).
+__pycache__/
+results/
+models/
+work_*/
+*.pt2
+*.pte
+*.pth
+*.ckpt.pt
+*.data
+*.xyz
+*.csv
+*.png
+*log*
+# NEP reference potential (place a trained nep.txt here for nep_scan.py).
+nep.txt

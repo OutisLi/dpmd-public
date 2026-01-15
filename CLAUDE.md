@@ -437,7 +437,7 @@ Where:
 
 ## SeZM Specific:
 
-- 遵循 \$HOME/.codex/AGENTS.md 中的要求，包括代码，注释风格（注意可读性，毕竟模型结构比较复杂）
+- 遵循 \$HOME/.claude/CLAUDE.md 中的要求，包括代码，注释风格（注意可读性，毕竟模型结构比较复杂）
 - 需要先阅读 ./doc/outisli/dpa4.md 中的现在的实现记录，然后完善修改 deepmd/pt/model/descriptor/sezm.py 以及 deepmd/pt/model/descriptor/sezm_nn/ 下的相关模块（顶层描述子通过 deepmd/pt/model/descriptor/sezm_nn/__init__.py 统一导入，模块化，结构清晰）
 - 若有需要，可以参考 \$HOME/Research/equiv-zoo/models 中其他参考文献中的源代码实现（我给你的路径就是可以直接访问的路径，仅阅读源代码，不能直接 import 别人的代码），以及 deepmd 的 pt 后端示例描述子 deepmd/pt/model/descriptor/se_a.py，保持接口一致
 - Unit test 按职责拆分：描述子相关测试写在 source/tests/pt/model/test_descriptor_sezm.py，Triton 相关测试写在 source/tests/pt/model/test_descriptor_sezm_triton.py，SeZM model/compile 相关测试写在 source/tests/pt/model/test_sezm_model.py。可以查看同目录下其他测试文件，需要能够测试关键步骤的正确性，先不需要宏观的测试，因为现在还是初始开发阶段，不需要给小操作，不重要的操作写 unit test，现有的 unit test 有不合适的，没有必要的也请删除。
