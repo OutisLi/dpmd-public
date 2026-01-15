@@ -50,6 +50,9 @@ uv.lock
 buildcxx/
 node_modules/
 *.bib.original
+.claude
+.spec-workflow
+.serena
 
 # Coverage files
 .coverage
@@ -74,3 +77,14 @@ frozen_model.*
 # Test system directories
 system/
 *.expected
+
+# clangd
+compile_commands.json
+source/.cache
+
+# pytorch profiler
+*.tfevents.*
+*.pt.trace.json
+
+# temp
+.serena

@@ -1,0 +1,18 @@
+# Generated benchmark artifacts. Regenerate the reference curves with
+# benchmark_all.py and the DPA4C grades with parameter_sweep.py.
+__pycache__/
+results/
+models/
+systems/
+work_*/
+*.pt2
+*.pte
+*.pth
+*.ckpt.pt
+*.data
+*.xyz
+*.csv
+*.png
+*log*
+# NEP reference potential (place a trained nep.txt here for nep_scan.py).
+nep.txt

@@ -1,0 +1,28 @@
+# Plain-versus-bridged DPA4C NVT throughput benchmark on diamond carbon.
+#
+# An untrained bridged model is dominated by the ZBL repulsion: it heats the
+# lattice by thousands of kelvin within a hundred steps and multiplies the
+# neighbor rebuilds, so a plain and a bridged model would be timed on different
+# trajectories. A vanishing timestep keeps both on the initial lattice, and the
+# fixed rebuild cadence reproduces the four rebuilds per hundred steps that the
+# plain model takes under in.lammps. Everything else follows in.lammps.
+units           metal
+boundary        p p p
+atom_style      atomic
+atom_modify     map yes         # required by the Kokkos deepmd/kk pair
+
+read_data       ${datafile}
+
+pair_style      deepmd ${model}
+pair_coeff      * * C
+
+neighbor        1.0 bin
+neigh_modify    every 25 delay 0 check no
+
+velocity        all create 300.0 12345 mom yes rot yes dist gaussian
+fix             1 all nvt temp 300.0 300.0 0.1
+timestep        1.0e-6
+
+thermo          ${nsteps}
+run             ${warmup}       # warmup: AOTInductor first launch + neighbor build
+run             ${nsteps}       # timed run (last timing breakdown is parsed)

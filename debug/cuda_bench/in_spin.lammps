@@ -1,0 +1,30 @@
+# DPA4C native-spin throughput benchmark on diamond carbon.
+#
+# The geometry, cutoff, neighbor skin and integrator match in.lammps, so the
+# difference against the energy run is the spin branch of the fused kernel and
+# the magnetic force it scatters. Moments are held fixed: LAMMPS integrates
+# spins with fix nve/spin, which has no Kokkos implementation and would place
+# a host-side O(N) update in every step, hiding the pair-style cost this scan
+# measures. The pair style still evaluates the spin-conditioned descriptor and
+# writes fm on every step, so the per-step model cost is the one a spin
+# trajectory pays.
+units           metal
+boundary        p p p
+atom_style      spin
+atom_modify     map yes         # required by the Kokkos deepmd pair styles
+
+read_data       ${datafile}
+
+pair_style      dpa4spin ${model}
+pair_coeff      * * C
+
+neighbor        1.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+velocity        all create 300.0 12345 mom yes rot yes dist gaussian
+fix             1 all nvt temp 300.0 300.0 0.1
+timestep        0.001
+
+thermo          ${nsteps}
+run             ${warmup}       # warmup: AOTInductor first launch + neighbor build
+run             ${nsteps}       # timed run (last timing breakdown is parsed)
