@@ -1,0 +1,14 @@
+runs/
+fairchem_src/
+*.pt
+*.npy
+*.npz
+*.csv
+*.png
+*.svg
+*.log
+*.json
+*.hdf5
+__pycache__/
+.nfs*
+*.out

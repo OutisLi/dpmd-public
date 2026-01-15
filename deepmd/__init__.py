@@ -8,10 +8,15 @@ The top module (deepmd.__init__) should not import any third-party
 modules for performance.
 """
 
+import os
 from typing import (
     TYPE_CHECKING,
     Any,
 )
+
+# PyTorch initializes C++ logging on import. Set its default before any backend
+# can load it, so recoverable CUDA allocator retries do not emit warnings.
+os.environ.setdefault("TORCH_CPP_LOG_LEVEL", "ERROR")
 
 if TYPE_CHECKING:
     from deepmd.infer import DeepPotential as DeepPotentialType

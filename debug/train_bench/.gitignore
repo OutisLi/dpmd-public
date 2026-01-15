@@ -1,0 +1,16 @@
+# Generated benchmark artifacts and run directories. The harnesses themselves
+# (bench.py, gradcheck.py, verify_train.py, micro.py) are tracked.
+__pycache__/
+work/
+runs/
+results/
+*.nsys-rep
+*.ncu-rep
+*.sqlite
+*.json.gz
+*.log
+*.csv
+*.png
+*.pt
+lcurve.out
+*.sh

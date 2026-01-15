@@ -1,0 +1,23 @@
+# Force evaluations of a frozen DeePMD-kit model (.pt2) on a fixed configuration:
+# the sites of the diamond benchmark stay where the data file puts them, so the
+# carbon, BCN and five-element systems are evaluated on one geometry and one
+# neighbor list, and they differ in the types of their atoms alone. The
+# elements of the LAMMPS types follow the data file of the flavor: C by
+# default, -var elements "B C N" for BCN and "B C N O F" for five elements.
+variable        elements index C
+units           metal
+boundary        p p p
+atom_style      atomic
+atom_modify     map yes         # required by the Kokkos deepmd/kk pair
+
+read_data       ${datafile}
+
+pair_style      deepmd ${model}
+pair_coeff      * * ${elements}
+
+neighbor        1.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+thermo          ${nsteps}
+run             ${warmup}       # warmup: AOTInductor first launch + neighbor build
+run             ${nsteps}       # timed run (last timing breakdown is parsed)

@@ -1,0 +1,310 @@
+{
+  "controlled_scalar": {
+    "nvt": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "loops": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "group": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "firstgroup": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "other_temp": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "rmass": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "bias": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "dynamic": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "npt": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "aniso": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "restart": {
+      "thermo.json": true,
+      "trajectory.dump": true,
+      "after_restart.dump": true
+    }
+  },
+  "controlled_initial": {
+    "nvt": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "loops": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "group": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "firstgroup": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "other_temp": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "rmass": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "bias": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "dynamic": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "npt": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "aniso": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "restart": {
+      "thermo.json": true,
+      "trajectory.dump": true,
+      "after_restart.dump": true
+    }
+  },
+  "mpi_scalar": {
+    "nvt": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    },
+    "aniso": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    }
+  },
+  "observed_scalar": {
+    "observed": {
+      "thermo.json": true,
+      "trajectory.dump": true
+    }
+  },
+  "model_scalar": [
+    {
+      "case": "energy_nano_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "energy_plus_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "bcn_nano_10296",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "bcn_plus_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "spin_nano_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    }
+  ],
+  "model_initial": [
+    {
+      "case": "energy_nano_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "energy_plus_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "bcn_nano_10296",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "bcn_plus_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "spin_nano_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    }
+  ],
+  "neighbor_new": {
+    "crossing": {
+      "counts": {
+        "builds": 26,
+        "dangerous": 0
+      },
+      "equal": {
+        "thermo.json": true,
+        "trajectory.dump": true,
+        "counts.json": true
+      }
+    },
+    "host": {
+      "counts": {
+        "builds": 26,
+        "dangerous": 0
+      },
+      "equal": {
+        "thermo.json": true,
+        "trajectory.dump": true,
+        "counts.json": true
+      }
+    },
+    "include": {
+      "counts": {
+        "builds": 26,
+        "dangerous": 0
+      },
+      "equal": {
+        "thermo.json": true,
+        "trajectory.dump": true,
+        "counts.json": true
+      }
+    },
+    "deform": {
+      "counts": {
+        "builds": 39,
+        "dangerous": 0
+      },
+      "equal": {
+        "thermo.json": true,
+        "trajectory.dump": true,
+        "counts.json": true
+      }
+    },
+    "triclinic": {
+      "counts": {
+        "builds": 39,
+        "dangerous": 0
+      },
+      "equal": {
+        "thermo.json": true,
+        "trajectory.dump": true,
+        "counts.json": true
+      }
+    }
+  },
+  "neighbor_mpi_new": {
+    "empty_rank": {
+      "counts": {
+        "builds": 26,
+        "dangerous": 0
+      },
+      "equal": {
+        "thermo.json": true,
+        "trajectory.dump": true,
+        "counts.json": true
+      }
+    }
+  },
+  "model_neighbor": [
+    {
+      "case": "energy_nano_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "energy_plus_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "bcn_nano_10296",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "bcn_plus_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "spin_nano_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    }
+  ],
+  "installed_smoke": [
+    {
+      "mode": "energy",
+      "dump_equal": true,
+      "thermo_equal": true,
+      "rows": 52
+    },
+    {
+      "mode": "spin",
+      "dump_equal": true,
+      "thermo_equal": true,
+      "rows": 52
+    }
+  ],
+  "existing_nonspin_suite": {
+    "base": {
+      "passed": 4,
+      "skipped": 0
+    },
+    "scalar": {
+      "passed": 4,
+      "skipped": 0
+    },
+    "initial": {
+      "passed": 4,
+      "skipped": 0
+    },
+    "neighbor": {
+      "passed": 4,
+      "skipped": 0
+    }
+  }
+}

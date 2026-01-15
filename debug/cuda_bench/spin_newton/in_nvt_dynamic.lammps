@@ -1,0 +1,38 @@
+# Non-spin DPA4C NVT of a dynamic group, for checking the KOKKOS fix nvt with
+# a temperature whose degree-of-freedom count changes during the run.
+#
+# The thermostat acts on the atoms above the plane z = 7.134 A, which holds a
+# layer of atoms of the 512-atom diamond cell; the group is re-evaluated every
+# 10 steps, so atoms of that layer enter and leave it. prerun 1 runs "run 0"
+# before the timed run and starts the log and the dump afterwards. Run with
+# -k on g 1 -sf kk; required variables: datafile, model, logfile, dumpfile.
+variable        nsteps  index 300
+variable        prerun  index 0
+
+units           metal
+boundary        p p p
+atom_style      atomic
+atom_modify     map yes sort 0 0.0
+
+read_data       ${datafile}
+
+pair_style      deepmd ${model}
+pair_coeff      * * C
+
+neighbor        1.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+region          upper block INF INF INF INF 7.134 INF units box
+group           upper dynamic all region upper every 10
+velocity        all create 300.0 12345 mom yes rot yes dist gaussian
+fix             1 upper nvt temp 300.0 300.0 0.1
+timestep        0.001
+
+thermo_style    custom step temp pe ke etotal f_1 c_1_temp
+thermo_modify   format float %.17g
+thermo          10
+if "${prerun} > 0" then "run 0"
+log             ${logfile}
+dump            state all custom 100 ${dumpfile} id x y z vx vy vz
+dump_modify     state sort id format float %.17g
+run             ${nsteps}

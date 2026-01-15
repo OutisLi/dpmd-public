@@ -1,0 +1,51 @@
+# Non-spin DPA4C NVT run for before/after comparisons of the KOKKOS fix nvt.
+#
+# The geometry, pair style, neighbor settings and thermostat match
+# debug/cuda_bench/in.lammps; the state is dumped by atom ID with full
+# precision and the thermo output includes the conserved-energy contribution
+# f_1 of the thermostat. Run with -k on g 1 -sf kk.
+#
+# Required variables: datafile, model. Optional: nhopts adds fix nvt keywords
+# (for example "tchain 5 tloop 3 drag 0.2"), tstop ramps the target
+# temperature, split 1 runs the steps as two runs, sort sets the atom sorting
+# interval. Kokkos device sorting orders the atoms of a bin by atomic counters,
+# so the kinetic-energy sum of the thermostat, and with it the trajectory,
+# differs between repeated runs in the last bits unless sort is 0.
+variable        nsteps  index 2000
+variable        every   index 100
+variable        dump    index 500
+variable        tstop   index 300.0
+variable        nhopts  index ""
+variable        split   index 0
+variable        dumpfile index nvt.dump
+variable        sort    index 0
+
+units           metal
+boundary        p p p
+atom_style      atomic
+atom_modify     map yes sort ${sort} 0.0
+
+read_data       ${datafile}
+
+pair_style      deepmd ${model}
+pair_coeff      * * C
+
+neighbor        1.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+velocity        all create 300.0 12345 mom yes rot yes dist gaussian
+fix             1 all nvt temp 300.0 ${tstop} 0.1 ${nhopts}
+timestep        0.001
+
+dump            state all custom ${dump} ${dumpfile} id x y z vx vy vz fx fy fz
+dump_modify     state sort id format float %.17g
+
+thermo_style    custom step temp pe ke etotal press f_1
+thermo_modify   format float %.17g
+thermo          ${every}
+if "${split} > 0" then &
+  "variable half equal ${nsteps}/2" &
+  "run ${half}" &
+  "run ${half}" &
+else &
+  "run ${nsteps}"

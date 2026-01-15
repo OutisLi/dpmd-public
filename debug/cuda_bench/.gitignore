@@ -1,0 +1,45 @@
+# Generated benchmark artifacts. Regenerate the reference curves with
+# benchmark_all.py and the DPA4C grades with parameter_sweep.py.
+__pycache__/
+# Run directories: scan results, frozen models, generated systems, per-run work
+# directories and run logs.
+results/
+models/
+systems/
+work_*/
+logs/
+# Log files and run output of LAMMPS, the benchmarks and the profilers.
+*.log
+log.*
+log_*
+*.out
+# Nsight Systems and Nsight Compute reports and their exports.
+*.nsys-rep
+*.ncu-rep
+*.qdstrm
+*.sqlite
+# LAMMPS dumps and restart files.
+*.dump
+dump.*
+*.restart
+# Dumped graphs, result arrays, tables and plots.
+*.npy
+*.npz
+*.csv
+*.png
+# Frozen models and checkpoints.
+*.pt2
+*.pte
+*.pth
+*.ckpt.pt
+# Generated LAMMPS systems and the lock files of their cache.
+*.data
+*.xyz
+*.lock
+# Build directories and compiled objects.
+build/
+build_*/
+*.o
+*.so
+# NEP reference potential (place a trained nep.txt here for nep_scan.py).
+nep.txt

@@ -1,0 +1,35 @@
+# Restart round trip of Newtonian spin dynamics: part full runs 200 steps,
+# part first runs the first 100 and writes a restart file, and part second
+# reads it and runs the other 100. The thermo output (every 10 steps, %.15g)
+# includes the spin kinetic energy, which the restart file carries through
+# the spin velocity and inertia. Atoms are not sorted and neighbor lists are
+# rebuilt every 10 steps, so the continued run reproduces the uninterrupted
+# one up to the summation order of a run setup. Run with -k on g 1 -sf kk;
+# required variables: part, datafile, model.
+variable        dt      index 0.00004
+
+units           metal
+boundary        p p p
+atom_style      spin
+atom_modify     map yes sort 0 0.0
+
+if "${part} == second" then "read_restart spin.restart" else "read_data ${datafile}"
+run_style       verlet
+
+pair_style      dpa4spin ${model} magnetic_force cartesian
+pair_coeff      * * C
+
+neighbor        1.0 bin
+neigh_modify    every 10 delay 0 check no
+timestep        ${dt}
+
+if "${part} != second" then &
+  "velocity all create 300.0 12345 spin yes spmass 0.1" &
+  "velocity all zero linear"
+fix             integrate all nve/spin lattice_flag yes spin_flag yes
+
+thermo_style    custom step ke ske pe etotal
+thermo_modify   format float %.15g
+thermo          10
+if "${part} == full" then "run 200" else "run 100"
+if "${part} == first" then "write_restart spin.restart"

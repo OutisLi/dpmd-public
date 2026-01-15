@@ -1,0 +1,82 @@
+{
+  "median_ms": {
+    "A": 6.31936,
+    "B": 6.4800699999999996
+  },
+  "reduction_percent": -2.5431372797245277,
+  "runs": [
+    {
+      "side": "A",
+      "repeat": 0,
+      "ms": 6.05257,
+      "builds": 100
+    },
+    {
+      "side": "B",
+      "repeat": 0,
+      "ms": 6.47026,
+      "builds": 100
+    },
+    {
+      "side": "B",
+      "repeat": 1,
+      "ms": 6.48988,
+      "builds": 100
+    },
+    {
+      "side": "A",
+      "repeat": 1,
+      "ms": 6.4156200000000005,
+      "builds": 100
+    },
+    {
+      "side": "A",
+      "repeat": 2,
+      "ms": 6.40065,
+      "builds": 100
+    },
+    {
+      "side": "B",
+      "repeat": 2,
+      "ms": 6.249820000000001,
+      "builds": 100
+    },
+    {
+      "side": "B",
+      "repeat": 3,
+      "ms": 6.45817,
+      "builds": 100
+    },
+    {
+      "side": "A",
+      "repeat": 3,
+      "ms": 6.05702,
+      "builds": 100
+    },
+    {
+      "side": "A",
+      "repeat": 4,
+      "ms": 6.4315500000000005,
+      "builds": 100
+    },
+    {
+      "side": "B",
+      "repeat": 4,
+      "ms": 6.5184299999999995,
+      "builds": 100
+    },
+    {
+      "side": "B",
+      "repeat": 5,
+      "ms": 6.57669,
+      "builds": 100
+    },
+    {
+      "side": "A",
+      "repeat": 5,
+      "ms": 6.2380700000000004,
+      "builds": 100
+    }
+  ],
+  "raw_directory": "/tmp/lmp-perf-r2-20261021/ab_axis_rebuild"
+}

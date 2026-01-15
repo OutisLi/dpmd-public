@@ -1,0 +1,35 @@
+# Newtonian spin dynamics with one atom lost through a fixed boundary, for
+# checking that the spin velocity and inertia stay with their atoms when the
+# slot of the lost atom is refilled.
+#
+# Atom 1 sits 0.02 A above the lower z face of the 512-atom diamond cell and
+# leaves it in the first step; the next reneighboring (step 10) deletes it,
+# and thermo_modify lost ignore lets the run continue. The spin kinetic energy
+# ske afterwards must lack exactly the share of the lost atom. Atoms are not
+# sorted, so the slot order is that of the data file. Run with -k on g 1 -sf kk;
+# required variables: datafile, model.
+units           metal
+boundary        p p f
+atom_style      spin
+atom_modify     map yes sort 0 0.0
+
+read_data       ${datafile}
+run_style       verlet
+
+pair_style      dpa4spin ${model} magnetic_force cartesian
+pair_coeff      * * C
+
+neighbor        1.0 bin
+neigh_modify    every 10 delay 0 check no
+timestep        0.00001
+
+velocity        all create 300.0 12345 spin yes spmass 0.1
+velocity        all zero linear
+group           escapee id 1
+velocity        escapee set NULL NULL -2000.0 units box
+fix             integrate all nve/spin lattice_flag yes spin_flag yes
+
+thermo_style    custom step atoms ke ske pe etotal
+thermo_modify   lost ignore format float %.17g
+thermo          1
+run             20

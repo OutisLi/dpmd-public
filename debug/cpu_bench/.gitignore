@@ -1,0 +1,11 @@
+# Generated benchmark artifacts. Regenerate the frozen archives with freeze.py
+# and the supercells on demand; every script writes what it needs.
+__pycache__/
+results/
+models/
+systems/
+*.pt2
+*.data
+*.json
+*log*
+*.stderr

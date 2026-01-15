@@ -34,6 +34,18 @@ See [How to control the parallelism of a job](./troubleshooting/howtoset_num_nod
 
 ## Python interface only
 
+:::{envvar} TORCH_CPP_LOG_LEVEL
+
+**Choices**: `INFO`, `WARNING`, `ERROR`, `FATAL`; **Default**: `ERROR`
+
+{{ pytorch_icon }} Minimum severity of PyTorch C++ log messages. DeePMD-kit sets
+this default before importing PyTorch, suppressing recoverable CUDA allocator
+retry warnings and other C++ INFO/WARNING messages. C++ errors, Python warnings,
+DeePMD-kit logs, and out-of-memory exceptions retain their usual behavior.
+An explicitly set value takes precedence. PyTorch reads this setting during
+initialization, so the default applies when DeePMD-kit is imported before PyTorch.
+:::
+
 :::{envvar} DP_INTERFACE_PREC
 
 **Choices**: `high`, `low`; **Default**: `high`
