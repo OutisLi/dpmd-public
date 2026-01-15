@@ -1,0 +1,20 @@
+# Per-atom energies and forces of one configuration (run 0), written for the
+# comparison of two builds: pe/atom and forces at %.15g, thermo at %.14g.
+# The elements of the LAMMPS types default to carbon; the multi-element
+# system takes -var elements "B C N".
+variable        elements index C
+units           metal
+boundary        p p p
+atom_style      atomic
+atom_modify     map yes
+read_data       ${datafile}
+pair_style      deepmd ${model}
+pair_coeff      * * ${elements}
+neighbor        1.0 bin
+neigh_modify    every 1 delay 0 check yes
+compute         pea all pe/atom
+dump            d all custom 1 dump.${tag} id c_pea fx fy fz
+dump_modify     d format float %.15g sort id
+thermo_style    custom step pe press pxx pyy pzz pxy pxz pyz
+thermo_modify   format float %20.14g
+run             0

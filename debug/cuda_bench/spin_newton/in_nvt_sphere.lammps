@@ -1,0 +1,34 @@
+# Lennard-Jones spheres under fix nvt/sphere whose temperature compute is a
+# translational temp compute (fix_modify temp), for checking that the KOKKOS
+# fix scales the angular velocities.
+#
+# The pair style exerts no torque, so the rotational kinetic energy c_erot
+# changes only through the thermostat, which scales the angular velocities
+# together with the velocities. Run with -k on g 1 -sf kk, or without the
+# KOKKOS package for the host reference.
+units           lj
+atom_style      sphere
+atom_modify     map yes
+
+lattice         fcc 0.8442
+region          box block 0 6 0 6 0 6
+create_box      1 box
+create_atoms    1 box
+set             type 1 diameter 1.0
+set             type 1 mass 1.0
+set             type 1 omega 1.0 -0.5 0.25
+
+pair_style      lj/cut 2.5
+pair_coeff      1 1 1.0 1.0 2.5
+neighbor        0.3 bin
+
+velocity        all create 1.5 87287 loop geom
+compute         tlin all temp
+fix             1 all nvt/sphere temp 1.0 1.0 0.5
+fix_modify      1 temp tlin
+compute         erot all erotate/sphere
+
+thermo_style    custom step temp c_erot pe etotal f_1
+thermo_modify   format float %.17g
+thermo          50
+run             500

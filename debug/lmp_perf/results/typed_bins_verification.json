@@ -1,0 +1,112 @@
+{
+  "baseline_commit": "6218c78",
+  "typed_commit": "f3e7a95",
+  "neighbor_rows": [
+    {
+      "case": "full17",
+      "metadata": "local 864 ghost 2565 cap 17 bins 1729",
+      "row_count": 864,
+      "exact": true
+    },
+    {
+      "case": "full99",
+      "metadata": "local 864 ghost 2565 cap 99 bins 344",
+      "row_count": 864,
+      "exact": true
+    },
+    {
+      "case": "half_tri17",
+      "metadata": "local 864 ghost 2756 cap 17 bins 2701",
+      "row_count": 864,
+      "exact": true
+    },
+    {
+      "case": "half_tri99",
+      "metadata": "local 864 ghost 2756 cap 99 bins 344",
+      "row_count": 864,
+      "exact": true
+    },
+    {
+      "case": "ghost17",
+      "metadata": "local 864 ghost 2565 cap 17 bins 1729",
+      "row_count": 3429,
+      "exact": true
+    },
+    {
+      "case": "ghost99",
+      "metadata": "local 864 ghost 2756 cap 99 bins 344",
+      "row_count": 3620,
+      "exact": true
+    },
+    {
+      "case": "size17",
+      "metadata": "local 864 ghost 2756 cap 17 bins 2701",
+      "row_count": 864,
+      "exact": true
+    },
+    {
+      "case": "size99",
+      "metadata": "local 864 ghost 2565 cap 99 bins 344",
+      "row_count": 864,
+      "exact": true
+    }
+  ],
+  "models": [
+    {
+      "case": "energy_nano_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "energy_plus_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "bcn_nano_10296",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "bcn_plus_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    },
+    {
+      "case": "spin_nano_512",
+      "rows": 52,
+      "state.dump": true,
+      "thermo.json": true
+    }
+  ],
+  "nonspin_tests_passed": 4,
+  "memcheck": {
+    "memcheck_size_ob1.log": "========= COMPUTE-SANITIZER\n========= ERROR SUMMARY: 0 errors\n",
+    "memcheck_ghost.log": "========= COMPUTE-SANITIZER\n========= ERROR SUMMARY: 0 errors\n"
+  },
+  "review_model": "gpt-6.1-sol",
+  "review_reasoning": "high",
+  "limits": [
+    "BIGBIG runtime not executed",
+    "Non-CUDA accelerator backends not executed"
+  ],
+  "installed_commit": "f3e7a95",
+  "installed_smoke": [
+    {
+      "mode": "energy",
+      "rows": 52,
+      "thermo_equal": true,
+      "dump_equal": true
+    },
+    {
+      "mode": "spin",
+      "rows": 52,
+      "thermo_equal": true,
+      "dump_equal": true
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+--- a/src/KOKKOS/npair_kokkos.cpp
++++ b/src/KOKKOS/npair_kokkos.cpp
+@@ -24,6 +24,10 @@
+ #include "kokkos.h"
+ #include "transpose_helper_kokkos.h"
+
++#include <algorithm>
++#include <cmath>
++#include <limits>
++
+ namespace LAMMPS_NS {
+
+ namespace {
+@@ -108,6 +112,21 @@
+       for (int j = 1; j <= n; j++)
+         k_mycutneighsq.view_host()(i,j) = cutoff_custom * cutoff_custom;
+     k_cutneighsq = k_mycutneighsq;
++  }
++
++  // The axis bound covers the encoded cutoffs and the rounding interval of
++  // the squared-distance comparison, including a zero or subnormal cutoff.
++
++  cutneigh_bound = 0.0;
++  if (!GHOST && !SIZE) {
++    double max_cutsq = 0.0;
++    auto h_cutneighsq = k_cutneighsq.view_host();
++    for (int i = 1; i <= atom->ntypes; i++)
++      for (int j = 1; j <= atom->ntypes; j++)
++        max_cutsq = std::max(max_cutsq,
++                            static_cast<double>(static_cast<KK_FLOAT>(h_cutneighsq(i,j))));
++    const double infinity = std::numeric_limits<double>::infinity();
++    cutneigh_bound = std::nextafter(std::sqrt(std::nextafter(max_cutsq,infinity)),infinity);
+   }
+
+   k_cutneighsq.modify_host();
+@@ -208,6 +227,7 @@
+     data(*list,
+          k_cutneighsq.view<DeviceType>(),
+          k_cutneighghostsq.view<DeviceType>(),
++         cutneigh_bound,
+          k_bincount.view<DeviceType>(),
+          k_bins.view<DeviceType>(),
+          k_atom2bin.view<DeviceType>(),
+@@ -742,6 +762,7 @@
+         if (exclude && exclusion(i,j,itype,jtype)) continue;
+
+         const double delx = xtmp - other.x[m];
++        if (Kokkos::fabs(delx) > cutneigh_bound) continue;
+         const double dely = ytmp - other.y[m];
+         const double delz = ztmp - other.z[m];
+         const double rsq = delx*delx + dely*dely + delz*delz;
+@@ -838,6 +859,7 @@
+           if (exclude && exclusion(i,j,itype,jtype)) continue;
+
+           const double delx = xtmp - other.x[m];
++          if (Kokkos::fabs(delx) > cutneigh_bound) continue;
+           const double dely = ytmp - other.y[m];
+           const double delz = ztmp - other.z[m];
+           const double rsq = delx*delx + dely*dely + delz*delz;
+--- a/src/KOKKOS/npair_kokkos.h
++++ b/src/KOKKOS/npair_kokkos.h
+@@ -158,6 +158,7 @@
+
+   DAT::ttransform_kkfloat_2d k_cutneighsq;
+   DAT::ttransform_kkfloat_2d k_cutneighghostsq;
++  double cutneigh_bound;
+
+   // exclusion data from Neighbor class
+
+@@ -196,6 +197,7 @@
+
+   const typename AT::t_kkfloat_2d_randomread cutneighsq;
+   const typename AT::t_kkfloat_2d_randomread cutneighghostsq;
++  const double cutneigh_bound;
+
+   // exclusion data from Neighbor class
+
+@@ -267,6 +269,7 @@
+                         const NeighListKokkos<DeviceType> &_neigh_list,
+                         const typename AT::t_kkfloat_2d_randomread &_cutneighsq,
+                         const typename AT::t_kkfloat_2d_randomread &_cutneighghostsq,
++                        const double _cutneigh_bound,
+                         const typename AT::t_int_1d &_bincount,
+                         const typename AT::t_int_2d &_bins,
+                         const typename AT::t_int_1d &_atom2bin,
+@@ -307,7 +310,7 @@
+                         const typename AT::t_int_scalar _new_maxneighs,
+                         const HAT::t_int_scalar _h_new_maxneighs):
+     neigh_list(_neigh_list),delta(_delta),cutneighsq(_cutneighsq),
+-    cutneighghostsq(_cutneighghostsq),exclude(_exclude),
++    cutneighghostsq(_cutneighghostsq),cutneigh_bound(_cutneigh_bound),exclude(_exclude),
+     nex_type(_nex_type),ex1_type(_ex1_type),ex2_type(_ex2_type),
+     ex_type(_ex_type),nex_group(_nex_group),
+     ex1_bit(_ex1_bit),ex2_bit(_ex2_bit),

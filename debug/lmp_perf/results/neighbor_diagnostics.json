@@ -1,0 +1,92 @@
+[
+  {
+    "variant": "team",
+    "repeat": 0,
+    "step_ms": 6.8847000000000005,
+    "builds": 100
+  },
+  {
+    "variant": "half_bins",
+    "repeat": 0,
+    "step_ms": 7.5850599999999995,
+    "builds": 100
+  },
+  {
+    "variant": "three_quarter_bins",
+    "repeat": 0,
+    "step_ms": 8.92024,
+    "builds": 100
+  },
+  {
+    "variant": "flat",
+    "repeat": 0,
+    "step_ms": 6.080759999999999,
+    "builds": 100
+  },
+  {
+    "variant": "capacity128",
+    "repeat": 0,
+    "step_ms": 6.8456399999999995,
+    "builds": 100
+  },
+  {
+    "variant": "capacity128",
+    "repeat": 1,
+    "step_ms": 6.744350000000001,
+    "builds": 100
+  },
+  {
+    "variant": "flat",
+    "repeat": 1,
+    "step_ms": 5.8684400000000005,
+    "builds": 100
+  },
+  {
+    "variant": "three_quarter_bins",
+    "repeat": 1,
+    "step_ms": 8.6141,
+    "builds": 100
+  },
+  {
+    "variant": "half_bins",
+    "repeat": 1,
+    "step_ms": 7.357240000000001,
+    "builds": 100
+  },
+  {
+    "variant": "team",
+    "repeat": 1,
+    "step_ms": 6.6114999999999995,
+    "builds": 100
+  },
+  {
+    "variant": "team",
+    "repeat": 2,
+    "step_ms": 6.441369999999999,
+    "builds": 100
+  },
+  {
+    "variant": "half_bins",
+    "repeat": 2,
+    "step_ms": 7.216519999999999,
+    "builds": 100
+  },
+  {
+    "variant": "three_quarter_bins",
+    "repeat": 2,
+    "step_ms": 8.67319,
+    "builds": 100
+  },
+  {
+    "variant": "flat",
+    "repeat": 2,
+    "step_ms": 5.93567,
+    "builds": 100
+  },
+  {
+    "variant": "capacity128",
+    "repeat": 2,
+    "step_ms": 6.6895299999999995,
+    "builds": 100
+  }
+]

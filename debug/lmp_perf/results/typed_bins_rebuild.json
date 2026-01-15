@@ -1,0 +1,82 @@
+{
+  "median_ms": {
+    "A": 6.626885000000001,
+    "B": 6.2468449999999995
+  },
+  "reduction_percent": 5.734821111276278,
+  "runs": [
+    {
+      "side": "A",
+      "repeat": 0,
+      "ms": 6.71784,
+      "builds": 100
+    },
+    {
+      "side": "B",
+      "repeat": 0,
+      "ms": 6.23964,
+      "builds": 100
+    },
+    {
+      "side": "B",
+      "repeat": 1,
+      "ms": 6.43101,
+      "builds": 100
+    },
+    {
+      "side": "A",
+      "repeat": 1,
+      "ms": 6.71303,
+      "builds": 100
+    },
+    {
+      "side": "A",
+      "repeat": 2,
+      "ms": 6.53775,
+      "builds": 100
+    },
+    {
+      "side": "B",
+      "repeat": 2,
+      "ms": 6.37135,
+      "builds": 100
+    },
+    {
+      "side": "B",
+      "repeat": 3,
+      "ms": 6.16198,
+      "builds": 100
+    },
+    {
+      "side": "A",
+      "repeat": 3,
+      "ms": 6.6082600000000005,
+      "builds": 100
+    },
+    {
+      "side": "A",
+      "repeat": 4,
+      "ms": 6.487100000000001,
+      "builds": 100
+    },
+    {
+      "side": "B",
+      "repeat": 4,
+      "ms": 6.254049999999999,
+      "builds": 100
+    },
+    {
+      "side": "B",
+      "repeat": 5,
+      "ms": 6.12549,
+      "builds": 100
+    },
+    {
+      "side": "A",
+      "repeat": 5,
+      "ms": 6.645510000000001,
+      "builds": 100
+    }
+  ],
+  "raw_directory": "/tmp/lmp-perf-r2-20261021/ab_typed_rebuild"
+}

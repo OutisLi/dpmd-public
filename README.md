@@ -286,6 +286,8 @@ that matches the version used and the method-specific papers listed in
 DeePMD-kit is licensed under the
 [GNU Lesser General Public License v3.0 or later](./LICENSE).
 
+Use this command to generate json schema: `python -c "from deepmd.utils.argcheck import gen_json_schema; import json; json.dump(json.loads(gen_json_schema(multi_task=False)), open('./deepmd_json_schema.json', 'w'), indent=2)"`
+
 [agent-install]: https://docs.deepmodeling.com/projects/deepmd/en/latest/install/install-with-agent.html
 [agent-skills]: https://docs.deepmodeling.com/projects/deepmd/en/latest/agent-skills.html
 [ase]: https://docs.deepmodeling.com/projects/deepmd/en/latest/third-party/ase.html

@@ -1,0 +1,23 @@
+# Single-point evaluation of a native-spin model through dpa4spin/kk.
+#
+# Run with -k on g 1 -sf kk, which selects spin/kk, verlet/kk and dpa4spin/kk.
+# The dump carries positions, spin magnitude and direction, force and the
+# Cartesian magnetic force -dE/dS of every atom, sorted by atom ID and printed
+# with 17 significant digits, so identical text means bitwise identical values.
+units           metal
+boundary        p p p
+atom_style      spin
+atom_modify     map yes
+
+read_data       ${datafile}
+
+pair_style      dpa4spin ${model} magnetic_force cartesian
+pair_coeff      * * C
+neighbor        1.0 bin
+
+compute         spin all property/atom sp spx spy spz fmx fmy fmz
+thermo_style    custom step pe press
+thermo_modify   format float %.17g
+dump            point all custom 1 ${dumpfile} id x y z c_spin[1] c_spin[2] c_spin[3] c_spin[4] fx fy fz c_spin[5] c_spin[6] c_spin[7]
+dump_modify     point sort id format float %.17g
+run             0

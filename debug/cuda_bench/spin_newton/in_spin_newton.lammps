@@ -1,0 +1,79 @@
+# Newtonian spin dynamics (NVE) of diamond carbon with a native-spin DPA4C model.
+#
+# Run with -k on g 1 -sf kk, which selects spin/kk, verlet/kk, dpa4spin/kk and,
+# where the fork provides it, the device Newtonian integrator nve/spin/kk of
+# the OutisLi LAMMPS fork (NEWTONIAN_SPIN.md, sections 9-10); hostfix 1 keeps
+# the host fix nve/spin. It advances the lattice and the full Cartesian spin
+# vector S, including its magnitude, under the raw magnetic force
+# fm = -dE/dS, which dpa4spin/kk writes under magnetic_force cartesian.
+#
+# The randomized benchmark models have no stable diamond minimum and, for the
+# larger grades, a spin energy that is unbounded below: from this state the
+# closest pair falls from 1.40 to about 1.0 A within 20 fs, and the plus grade
+# diverges after about 17 fs. The default timestep therefore keeps the longest
+# timed run (2,200 steps) within 5 fs, where the lattice is intact; like the
+# energy scans on the crystal, the timed steps then contain no neighbor-list
+# rebuild, and the cost of a step does not depend on the timestep.
+#
+# Required variables: datafile, model, nsteps. The geometry, cutoff and
+# neighbor settings match in_spin.lammps. The elements of the LAMMPS types
+# default to carbon; the multi-element system takes -var elements "B C N". etotal includes the spin kinetic
+# energy ske. newton 0 is the reference without Newtonian spin integration:
+# the moments stay fixed and fix nve becomes the device integrator nve/kk.
+variable        warmup      index 0
+variable        elements    index C
+variable        dt          index 0.000002  # ps
+variable        temp        index 300.0     # K, lattice and spin modes
+variable        spmass      index 0.1       # A^2/muB^2; inertia = mass * spmass
+variable        seed        index 12345
+variable        every       index ${nsteps} # thermo output interval
+variable        sort        index 1000      # atom sorting interval in steps
+variable        rebuild     index 1         # neighbor check interval in steps
+variable        check       index yes       # no: rebuild every ${rebuild} steps
+variable        skin        index 1.0       # A, neighbor skin
+variable        newton      index 1         # 0: fixed moments, device fix nve
+variable        hostfix     index 0         # 1: host fix nve/spin under -sf kk
+variable        info        index 0         # 1: list the fixes and their styles
+variable        spinbath    index 0         # 1: add the host thermostat langevin/spin
+variable        dump        index 0         # >0: dump the state every ${dump} steps
+variable        dumpfile    index state.dump
+
+units           metal
+boundary        p p p
+atom_style      spin
+atom_modify     map yes sort ${sort} 0.0
+
+read_data       ${datafile}
+run_style       verlet
+
+pair_style      dpa4spin ${model} magnetic_force cartesian
+pair_coeff      * * ${elements}
+
+neighbor        ${skin} bin
+neigh_modify    every ${rebuild} delay 0 check ${check}
+timestep        ${dt}
+
+if "${newton} > 0" then &
+  "velocity all create ${temp} ${seed} spin yes spmass ${spmass}" &
+  "velocity all zero linear" &
+else &
+  "velocity all create ${temp} ${seed}" &
+  "velocity all zero linear"
+if "${hostfix} > 0" then "suffix off"
+if "${newton} > 0" then &
+  "fix integrate all nve/spin lattice_flag yes spin_flag yes" &
+else &
+  "fix integrate all nve"
+if "${hostfix} > 0" then "suffix on"
+if "${spinbath} > 0" then "fix spin_bath all langevin/spin ${temp} ${temp} 0.1 4711 zero no"
+if "${info} > 0" then "info fixes"
+if "${dump} > 0" then &
+  "compute spin all property/atom sp spx spy spz fmx fmy fmz" &
+  "dump state all custom ${dump} ${dumpfile} id x y z vx vy vz c_spin[1] c_spin[2] c_spin[3] c_spin[4] fx fy fz c_spin[5] c_spin[6] c_spin[7]" &
+  "dump_modify state sort id format float %.17g"
+
+thermo_style    custom step ke ske pe etotal temp press
+thermo_modify   format float %.12g
+thermo          ${every}
+run             ${warmup}
+run             ${nsteps}
