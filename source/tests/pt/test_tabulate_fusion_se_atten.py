@@ -1644,6 +1644,77 @@ class TestTabulateFusionSeAttenOp(unittest.TestCase):
             (self.em_x_tensor, self.em_tensor, self.two_embed_tensor),
         )
 
+    def test_nine_component_basis(self) -> None:
+        basis = self.em_tensor.detach()
+        extra_basis = torch.stack(
+            (
+                2.0 * basis[..., 0] - basis[..., 1],
+                basis[..., 1] + basis[..., 2],
+                basis[..., 2] - basis[..., 3],
+                0.5 * basis[..., 0] + basis[..., 3],
+                basis.sum(dim=-1),
+            ),
+            dim=-1,
+        )
+        basis = torch.cat((basis, extra_basis), dim=-1).requires_grad_(True)
+
+        base_output = self.expected_descriptor_tensor
+        extra_output = torch.stack(
+            (
+                2.0 * base_output[:, 0] - base_output[:, 1],
+                base_output[:, 1] + base_output[:, 2],
+                base_output[:, 2] - base_output[:, 3],
+                0.5 * base_output[:, 0] + base_output[:, 3],
+                base_output.sum(dim=1),
+            ),
+            dim=1,
+        )
+        expected_output = torch.cat((base_output, extra_output), dim=1)
+
+        output = torch.ops.deepmd.tabulate_fusion_se_atten(
+            self.table_tensor,
+            self.table_info_tensor,
+            self.em_x_tensor,
+            basis,
+            self.two_embed_tensor,
+            self.last_layer_size,
+            self.is_sorted,
+        )[0]
+        unsorted_output = torch.ops.deepmd.tabulate_fusion_se_atten(
+            self.table_tensor,
+            self.table_info_tensor,
+            self.em_x_tensor,
+            basis,
+            self.two_embed_tensor,
+            self.last_layer_size,
+            False,
+        )[0]
+        torch.testing.assert_close(
+            output,
+            expected_output,
+            atol=self.prec,
+            rtol=self.prec,
+        )
+        torch.testing.assert_close(
+            unsorted_output,
+            expected_output,
+            atol=self.prec,
+            rtol=self.prec,
+        )
+
+        (basis_grad,) = torch.autograd.grad(output.sum(), basis, retain_graph=True)
+        expected_grad = self.expected_dy_dem[..., :1].expand_as(basis)
+        torch.testing.assert_close(
+            basis_grad,
+            expected_grad,
+            atol=self.prec,
+            rtol=self.prec,
+        )
+        assert_second_order_backward_matches_finite_difference(
+            output,
+            (self.em_x_tensor, basis, self.two_embed_tensor),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

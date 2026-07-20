@@ -70,6 +70,7 @@ class DescrptSeAttenV2(DescrptDPA1):
         # not implemented
         spin: Any | None = None,
         type: str | None = None,
+        lmax: int = 1,
     ) -> None:
         r"""Construct smooth version of embedding net of type `se_atten_v2`.
 
@@ -88,6 +89,9 @@ class DescrptSeAttenV2(DescrptDPA1):
             Number of neurons in each hidden layers of the embedding net :math:`\mathcal{N}`
         axis_neuron : int
             Number of the axis neuron :math:`M_2` (number of columns of the sub-matrix of the embedding matrix)
+        lmax : int
+            Maximum angular degree of the aggregated moment basis. Supported
+            values are 1 and 2.
         tebd_dim : int
             Dimension of the type embedding
         set_davg_zero : bool
@@ -160,6 +164,7 @@ class DescrptSeAttenV2(DescrptDPA1):
             ntypes,
             neuron=neuron,
             axis_neuron=axis_neuron,
+            lmax=lmax,
             tebd_dim=tebd_dim,
             tebd_input_mode="strip",
             set_davg_zero=set_davg_zero,
@@ -237,6 +242,8 @@ class DescrptSeAttenV2(DescrptDPA1):
             "trainable": self.trainable,
             "spin": None,
         }
+        if obj.lmax != 1:
+            data["lmax"] = obj.lmax
         return data
 
     @classmethod

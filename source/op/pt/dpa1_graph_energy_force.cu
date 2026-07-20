@@ -64,6 +64,7 @@ dpa1_graph_energy_force(torch::Tensor edge_vec,
                         double rcut_smth,
                         double protection,
                         double nnei,
+                        int64_t basis_dim,
                         std::vector<torch::Tensor> fit_ws,
                         std::vector<torch::Tensor> fit_bs,
                         std::vector<torch::Tensor> fit_idts,
@@ -91,7 +92,7 @@ dpa1_graph_energy_force(torch::Tensor edge_vec,
       edge_vec_f, edge_index, edge_mask, atype, type_embedding, davg, dstd, w1,
       b1, idt1, w2, b2, idt2, w3, b3, idt3, gate_table, act, type_one_side,
       concat_tebd, /*write_rotation=*/0, smooth, axis, resnet2, resnet3, rcut,
-      rcut_smth, protection, nnei);
+      rcut_smth, protection, nnei, basis_dim);
   const torch::Tensor& grrg = std::get<0>(desc);
   const torch::Tensor& gr = std::get<2>(desc);
   const torch::Tensor& edge_order = std::get<3>(desc);
@@ -148,7 +149,8 @@ TORCH_LIBRARY_FRAGMENT(deepmd, m) {
       "b2, Tensor idt2, Tensor w3, Tensor b3, Tensor idt3, Tensor gate_table, "
       "int act, int type_one_side, int concat_tebd, int smooth, int axis, int "
       "resnet2, int resnet3, float rcut, float rcut_smth, float protection, "
-      "float nnei, Tensor[] fit_ws, Tensor[] fit_bs, Tensor[] fit_idts, int[] "
+      "float nnei, int basis_dim, Tensor[] fit_ws, Tensor[] fit_bs, Tensor[] "
+      "fit_idts, int[] "
       "fit_resnets, Tensor w_head, Tensor b_head, Tensor bias_atom_e, int "
       "fit_act, SymInt node_capacity, bool do_atomic_virial) -> (Tensor, "
       "Tensor, Tensor, Tensor, Tensor)");

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-or-later
 import itertools
+import math
 import unittest
 
 import numpy as np
@@ -170,3 +171,166 @@ class TestDescrptSeAtten(unittest.TestCase, TestCaseSingleFrameWithNlist):
             # dd1 = DescrptDPA1.deserialize(dd0.serialize())
             model = torch.jit.script(dd0)
             # model = torch.jit.script(dd1)
+
+
+class TestDPA1AngularMoments(unittest.TestCase):
+    """Test the dense PyTorch angular moment basis of DPA1."""
+
+    dtype = torch.float64
+
+    @staticmethod
+    def _build_descriptor(lmax: int) -> DescrptDPA1:
+        return DescrptDPA1(
+            rcut=3.0,
+            rcut_smth=2.5,
+            sel=4,
+            ntypes=1,
+            neuron=[4, 8, 8],
+            axis_neuron=4,
+            lmax=lmax,
+            tebd_dim=2,
+            tebd_input_mode="strip",
+            set_davg_zero=True,
+            attn_layer=0,
+            precision="float64",
+            concat_output_tebd=False,
+            seed=11,
+        ).to(env.DEVICE)
+
+    @classmethod
+    def _evaluate(
+        cls,
+        descriptor: DescrptDPA1,
+        neighbors: torch.Tensor,
+        *,
+        requires_grad: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        coord = torch.cat(
+            [
+                torch.zeros(
+                    (1, 3),
+                    dtype=cls.dtype,
+                    device=env.DEVICE,
+                ),
+                neighbors,
+            ]
+        ).reshape(1, -1)
+        coord.requires_grad_(requires_grad)
+        atype = torch.zeros((1, 5), dtype=torch.long, device=env.DEVICE)
+        nlist = torch.tensor(
+            [[[1, 2, 3, 4]]],
+            dtype=torch.long,
+            device=env.DEVICE,
+        )
+        result = descriptor(coord, atype, nlist)[0]
+        return result, coord
+
+    @classmethod
+    def _square_directions(cls) -> torch.Tensor:
+        return torch.tensor(
+            [
+                [1.0, 0.0, 0.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, -1.0, 0.0],
+            ],
+            dtype=cls.dtype,
+            device=env.DEVICE,
+        )
+
+    @classmethod
+    def _tetrahedral_directions(cls) -> torch.Tensor:
+        return torch.tensor(
+            [
+                [1.0, 1.0, 1.0],
+                [1.0, -1.0, -1.0],
+                [-1.0, 1.0, -1.0],
+                [-1.0, -1.0, 1.0],
+            ],
+            dtype=cls.dtype,
+            device=env.DEVICE,
+        ) / math.sqrt(3.0)
+
+    def test_lmax_two_resolves_quadrupole_collision(self) -> None:
+        square = self._square_directions()
+        tetrahedral = self._tetrahedral_directions()
+
+        degree_one = self._build_descriptor(lmax=1).eval()
+        square_l1, _ = self._evaluate(degree_one, square)
+        tetrahedral_l1, _ = self._evaluate(degree_one, tetrahedral)
+        torch.testing.assert_close(square_l1, tetrahedral_l1, atol=1e-12, rtol=1e-12)
+
+        degree_two = self._build_descriptor(lmax=2).eval()
+        square_l2, _ = self._evaluate(degree_two, square)
+        tetrahedral_l2, _ = self._evaluate(degree_two, tetrahedral)
+        self.assertGreater(
+            torch.linalg.vector_norm(square_l2 - tetrahedral_l2).item(),
+            1e-8,
+        )
+
+        restored = DescrptDPA1.deserialize(degree_two.serialize()).to(env.DEVICE).eval()
+        restored_square, _ = self._evaluate(restored, square)
+        torch.testing.assert_close(restored_square, square_l2)
+        scripted_square, _ = self._evaluate(torch.jit.script(degree_two), square)
+        torch.testing.assert_close(scripted_square, square_l2)
+
+    def test_lmax_two_is_rotation_and_permutation_invariant(self) -> None:
+        descriptor = self._build_descriptor(lmax=2).eval()
+        descriptor.se_atten.mean[..., 0] = 0.25
+        descriptor.se_atten.stddev[..., 0] = 1.75
+        neighbors = torch.tensor(
+            [
+                [1.1, 0.2, -0.1],
+                [-0.4, 0.9, 0.3],
+                [0.2, -0.5, 1.2],
+                [-0.7, -0.3, -0.8],
+            ],
+            dtype=self.dtype,
+            device=env.DEVICE,
+        )
+        rotation = torch.tensor(
+            [
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=self.dtype,
+            device=env.DEVICE,
+        )
+
+        reference, _ = self._evaluate(descriptor, neighbors)
+        rotated, _ = self._evaluate(descriptor, neighbors @ rotation.T)
+        permuted, _ = self._evaluate(descriptor, neighbors[[2, 0, 3, 1]])
+
+        torch.testing.assert_close(rotated, reference, atol=1e-10, rtol=1e-10)
+        torch.testing.assert_close(permuted, reference, atol=1e-10, rtol=1e-10)
+
+    def test_lmax_two_coordinate_derivatives_are_finite(self) -> None:
+        descriptor = self._build_descriptor(lmax=2)
+        coord = torch.tensor(
+            [[[0.0, 0.0, 0.0], [1.0, 0.2, 0.1], [-0.3, 0.9, -0.2]]],
+            dtype=self.dtype,
+            device=env.DEVICE,
+            requires_grad=True,
+        )
+        atype = torch.zeros((1, 3), dtype=torch.long, device=env.DEVICE)
+        nlist = torch.tensor(
+            [[[1, 2, -1, -1]]],
+            dtype=torch.long,
+            device=env.DEVICE,
+        )
+        result = descriptor(coord.reshape(1, -1), atype, nlist)[0]
+        (first_derivative,) = torch.autograd.grad(
+            result.sum(),
+            coord,
+            create_graph=True,
+        )
+        (second_derivative,) = torch.autograd.grad(
+            first_derivative.square().sum(),
+            coord,
+        )
+
+        self.assertTrue(torch.isfinite(first_derivative).all())
+        self.assertTrue(torch.isfinite(second_derivative).all())
+        self.assertGreater(first_derivative.abs().max().item(), 0.0)
+        self.assertGreater(second_derivative.abs().max().item(), 0.0)

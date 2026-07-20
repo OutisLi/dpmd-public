@@ -122,6 +122,9 @@ class DescrptSeAttenV2(DescrptDPA1):
             A list of strings. Give the name to each type of atoms.
     seed : int, Optional
             Random seed for initializing the network parameters.
+    lmax : int
+            Maximum angular degree of the Cartesian moment basis. Supported
+            values are 1 and 2.
     """
 
     def __init__(
@@ -158,6 +161,7 @@ class DescrptSeAttenV2(DescrptDPA1):
         type_map: list[str] | None = None,
         # consistent with argcheck, not used though
         seed: int | list[int] | None = None,
+        lmax: int = 1,
     ) -> None:
         DescrptDPA1.__init__(
             self,
@@ -195,6 +199,7 @@ class DescrptSeAttenV2(DescrptDPA1):
             type_map=type_map,
             # consistent with argcheck, not used though
             seed=seed,
+            lmax=lmax,
         )
         self.compress = False
 
@@ -246,6 +251,8 @@ class DescrptSeAttenV2(DescrptDPA1):
             "trainable": self.trainable,
             "spin": None,
         }
+        if obj.lmax != 1:
+            data["lmax"] = obj.lmax
         if self.compress:
             type_embd_data = (
                 self.type_embd_data

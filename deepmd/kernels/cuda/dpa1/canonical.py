@@ -86,6 +86,7 @@ def _forward_fake(
     rcut_smooth: float,
     protection: float,
     neighbors: float,
+    basis_dim: int,
 ) -> tuple[torch.Tensor, ...]:
     del (
         source,
@@ -117,7 +118,7 @@ def _forward_fake(
             width,
             3,
         ),
-        edge_vec.new_empty(node_count, 4, width),
+        edge_vec.new_empty(node_count, basis_dim, width),
     )
 
 
@@ -362,6 +363,7 @@ def dpa1_canonical_compress_energy_force(
         float(se.rcut_smth),
         float(se.env_protection),
         float(se.nnei),
+        (int(se.lmax) + 1) ** 2,
     )
 
     *hidden, head = fit.nets[0].layers

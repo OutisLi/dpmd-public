@@ -90,6 +90,7 @@ def _fake(
     rcut_smth: float,
     protection: float,
     nnei: float,
+    basis_dim: int,
     fit_ws: list[torch.Tensor],
     fit_bs: list[torch.Tensor],
     fit_idts: list[torch.Tensor],
@@ -151,6 +152,7 @@ def _cpu(
     rcut_smth: float,
     protection: float,
     nnei: float,
+    basis_dim: int,
     fit_ws: list[torch.Tensor],
     fit_bs: list[torch.Tensor],
     fit_idts: list[torch.Tensor],
@@ -196,6 +198,7 @@ def _cpu(
             rcut_smth,
             protection,
             nnei,
+            basis_dim,
         )
     )
     atom_e_raw, fit_saved = torch.ops.deepmd.graph_fitting(
@@ -410,6 +413,7 @@ def dpa1_graph_energy_force(
         float(se.rcut_smth),
         float(se.env_protection),
         float(se.nnei),
+        (int(se.lmax) + 1) ** 2,
         [layer.w.contiguous() for layer in hidden],
         [layer.b.contiguous() if layer.b is not None else fempty for layer in hidden],
         [

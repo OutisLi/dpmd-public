@@ -54,7 +54,8 @@ dpa1_graph_descriptor(torch::Tensor edge_vec,
                       double rcut,
                       double rcut_smth,
                       double protection,
-                      double nnei);
+                      double nnei,
+                      int64_t basis_dim);
 
 // dE/d(edge_vec) from dE/d(grrg); consumes the saved tensors of the forward.
 torch::Tensor dpa1_graph_descriptor_backward(

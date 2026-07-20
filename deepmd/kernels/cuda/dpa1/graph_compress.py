@@ -26,6 +26,10 @@ from typing import (
 
 import torch
 
+from deepmd.dpmodel.descriptor.dpa1 import (
+    build_dpa1_moment_basis,
+)
+
 __all__ = [
     "dpa1_graph_compress",
     "dpa1_graph_compress_energy_force",
@@ -118,6 +122,7 @@ def _forward_fake(
     rcut_smth: float,
     protection: float,
     nnei: float,
+    basis_dim: int,
 ) -> tuple[torch.Tensor, ...]:
     n_node = atype.shape[0]
     ng = table.shape[1] // 6
@@ -133,7 +138,7 @@ def _forward_fake(
             dtype=torch.float32,
             device=dev,
         ),
-        torch.empty(n_node, 4, ng, dtype=torch.float32, device=dev),
+        torch.empty(n_node, basis_dim, ng, dtype=torch.float32, device=dev),
     )
 
 
@@ -178,6 +183,7 @@ def _setup_context(ctx: Any, inputs: tuple, output: tuple) -> None:
         rcut_smth,
         protection,
         nnei,
+        _basis_dim,
     ) = inputs
     (gr,) = output[2:]
     ctx.save_for_backward(
@@ -275,7 +281,7 @@ def _backward(
         protection,
         nnei,
     )
-    return (d_edge_vec,) + (None,) * 25
+    return (d_edge_vec,) + (None,) * 26
 
 
 # ======================================================================
@@ -431,6 +437,7 @@ def _cpu_env_and_gg(
     rcut: float,
     rcut_smth: float,
     protection: float,
+    basis_dim: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Environment matrix, tabulated geometric net and strip gate (fp32).
 
@@ -447,6 +454,17 @@ def _cpu_env_and_gg(
     sw = u**3 * (-6 * u**2 + 15 * u - 10) + 1.0
     em = torch.cat([sw / q, ev * (sw / q**2)], dim=-1)
     rr = (em - davg[center_type]) / dstd[center_type]
+    moment_basis = rr
+    if basis_dim == 9:
+        moment_basis = build_dpa1_moment_basis(
+            rr,
+            ev,
+            sw,
+            dstd[center_type, 0:1],
+            edge_mask,
+            2,
+            protection,
+        )
     ss = rr[:, 0:1]
     pair_idx = _cpu_pair_idx(edge_index, atype, type_one_side, ntypes)
     gate = gate_table[pair_idx]
@@ -454,14 +472,14 @@ def _cpu_env_and_gg(
         gate = gate * sw
     n_edge = edge_vec.shape[0]
     em_x = ss.reshape(n_edge, 1)
-    em_rr = rr.reshape(n_edge, 1, 4)
+    em_rr = moment_basis.reshape(n_edge, 1, basis_dim)
     two_embed = gate.reshape(n_edge, 1, ng)
     outer = _cpu_tabulate_se_atten(table, info, em_x, em_rr, two_embed, ng)
-    return rr, outer
+    return moment_basis, outer
 
 
 def _cpu_outputs(
-    rr: torch.Tensor,
+    moment_basis: torch.Tensor,
     outer: torch.Tensor,
     edge_index: torch.Tensor,
     edge_mask: torch.Tensor,
@@ -474,7 +492,13 @@ def _cpu_outputs(
     n_node: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     outer = outer * edge_mask[:, None, None].to(outer.dtype)
-    gr = torch.zeros(n_node, 4, ng, dtype=outer.dtype, device=outer.device)
+    gr = torch.zeros(
+        n_node,
+        moment_basis.shape[-1],
+        ng,
+        dtype=outer.dtype,
+        device=outer.device,
+    )
     gr.index_add_(0, edge_index[1], outer)
     gr = gr / nnei
     gr_t = gr.permute(0, 2, 1)
@@ -512,6 +536,7 @@ def _cpu_forward(
     rcut_smth: float,
     protection: float,
     nnei: float,
+    basis_dim: int,
 ) -> tuple[torch.Tensor, ...]:
     n_node = atype.shape[0]
     ng = table.shape[1] // 6
@@ -521,9 +546,9 @@ def _cpu_forward(
         return (
             table.new_empty(0, out_dim),
             table.new_empty(0, ng, 3),
-            table.new_empty(0, 4, ng),
+            table.new_empty(0, basis_dim, ng),
         )
-    rr, outer = _cpu_env_and_gg(
+    moment_basis, outer = _cpu_env_and_gg(
         edge_vec,
         edge_index,
         edge_mask,
@@ -540,9 +565,10 @@ def _cpu_forward(
         rcut,
         rcut_smth,
         protection,
+        basis_dim,
     )
     grrg, rot_mat, gr = _cpu_outputs(
-        rr,
+        moment_basis,
         outer,
         edge_index,
         edge_mask,
@@ -589,12 +615,13 @@ def _cpu_backward(
 ) -> torch.Tensor:
     n_node = atype.shape[0]
     ng = table.shape[1] // 6
+    basis_dim = gr.shape[1]
     if n_node == 0:
         return torch.zeros_like(edge_vec)
     ntypes = gate_table.shape[0] if type_one_side else round(gate_table.shape[0] ** 0.5)
     ev = edge_vec.detach().clone().requires_grad_(True)
     with torch.enable_grad():
-        rr, outer = _cpu_env_and_gg(
+        moment_basis, outer = _cpu_env_and_gg(
             ev,
             edge_index,
             edge_mask,
@@ -611,9 +638,10 @@ def _cpu_backward(
             rcut,
             rcut_smth,
             protection,
+            basis_dim,
         )
         grrg, rot_mat, _gr = _cpu_outputs(
-            rr,
+            moment_basis,
             outer,
             edge_index,
             edge_mask,
@@ -747,6 +775,7 @@ def dpa1_graph_compress(
         float(se.rcut_smth),
         float(se.env_protection),
         float(se.nnei),
+        (int(se.lmax) + 1) ** 2,
     )
     if pad:
         # Drop the padding channels: the descriptor is stored channel-major
@@ -889,6 +918,7 @@ def dpa1_graph_compress_energy_force(
         float(se.rcut_smth),
         float(se.env_protection),
         float(se.nnei),
+        (int(se.lmax) + 1) ** 2,
     )
     weights = [layer.w.contiguous() for layer in hidden]
     biases = [

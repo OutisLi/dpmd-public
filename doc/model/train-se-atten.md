@@ -21,6 +21,14 @@ Attention-based descriptor $\mathcal{D}^i \in \mathbb{R}^{M \times M_{<}}$, whic
 where $\hat{\mathcal{G}}^i$ represents the embedding matrix $\mathcal{G}^i$ after additional self-attention mechanism and $\mathcal{R}^i$ is defined by the full case in the [`se_e2_a`](./train-se-e2-a.md).
 Note that we obtain $\mathcal{G}^i$ using the type embedding method by default in this descriptor. By default, we concat $s(r_{ij})$ and the type embeddings of central and neighboring atoms $\mathcal{A}^i$ and $\mathcal{A}^j$ as input of the embedding network $\mathcal{N}_{e,2}$:
 
+The PyTorch and DP model implementations optionally extend $\mathcal{R}^i$ with
+the five real, symmetric-traceless Cartesian components of the degree-two
+angular basis. Setting {ref}`lmax <model[standard]/descriptor[se_atten]/lmax>`
+to `2` changes the moment dimension from four to nine while preserving the
+neighbor-linear reduction and the same Gram contraction. The degree-two rows
+use the zero-mean radial factor $s(r_{ij})/\sigma_s$ and therefore do not
+introduce an explicit neighbor-pair or angle axis.
+
 ```math
    (\mathcal{G}^i)_j = \mathcal{N}_{e,2}(\{s(r_{ij}), \mathcal{A}^i, \mathcal{A}^j\})  \quad \mathrm{or}\quad(\mathcal{G}^i)_j = \mathcal{N}_{e,2}(\{s(r_{ij}), \mathcal{A}^j\})
 ```
@@ -103,6 +111,7 @@ An example of the DPA-1 descriptor is provided as follows
 - **{ref}`sel <model[standard]/descriptor[se_atten]/sel>`** gives the maximum possible number of neighbors in the cut-off radius. It is an int. Note that this number highly affects the efficiency of training, which we usually use less than 200. (We use 120 for training 56 elements in [OC2M dataset](https://github.com/Open-Catalyst-Project/ocp/blob/main/DATASET.md))
 - The {ref}`neuron <model[standard]/descriptor[se_atten]/neuron>` specifies the size of the embedding net. From left to right the members denote the sizes of each hidden layer from the input end to the output end, respectively. If the outer layer is twice the size of the inner layer, then the inner layer is copied and concatenated, then a [ResNet architecture](https://arxiv.org/abs/1512.03385) is built between them.
 - The {ref}`axis_neuron <model[standard]/descriptor[se_atten]/axis_neuron>` specifies the size of the submatrix of the embedding matrix, the axis matrix as explained in the [DeepPot-SE paper](https://arxiv.org/abs/1805.09003)
+- {ref}`lmax <model[standard]/descriptor[se_atten]/lmax>` selects the maximum angular degree of the moment basis. `1` uses the original scalar and vector moments; `2` additionally includes five quadrupole components. The degree-two option is currently supported by the PyTorch and DP model implementations.
 - If the option {ref}`resnet_dt <model[standard]/descriptor[se_atten]/resnet_dt>` is set to `true`, then a timestep is used in the ResNet.
 - {ref}`seed <model[standard]/descriptor[se_atten]/seed>` gives the random seed that is used to generate random numbers when initializing the model parameters.
 - {ref}`attn <model[standard]/descriptor[se_atten]/attn>` sets the length of a hidden vector during scale-dot attention computation.

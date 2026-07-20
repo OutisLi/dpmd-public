@@ -57,6 +57,9 @@ from typing import (
 
 import torch
 
+from deepmd.dpmodel.descriptor.dpa1 import (
+    build_dpa1_moment_basis,
+)
 from deepmd.kernels.triton.dpa1.activation import (
     ACT_CODES,
 )
@@ -109,6 +112,7 @@ def _forward_fake(
     rcut_smth: float,
     protection: float,
     nnei: float,
+    basis_dim: int,
 ) -> tuple[torch.Tensor, ...]:
     n_edge = edge_vec.shape[0]
     n_node = atype.shape[0]
@@ -131,7 +135,7 @@ def _forward_fake(
             dtype=torch.float32,
             device=dev,
         ),
-        torch.empty(n_node, 4, ng, dtype=torch.float32, device=dev),
+        torch.empty(n_node, basis_dim, ng, dtype=torch.float32, device=dev),
         torch.empty(n_edge, dtype=torch.int32, device=dev),
         torch.empty(n_pairs, w1.shape[1], dtype=torch.float32, device=dev),
         torch.empty(n2, e_pad, dtype=torch.float32, device=dev),
@@ -187,6 +191,7 @@ def _setup_context(ctx: Any, inputs: tuple, output: tuple) -> None:
         rcut_smth,
         protection,
         nnei,
+        _basis_dim,
     ) = inputs
     # gr, edge_order, pair_table, pre2_saved, g_saved; the type embedding is
     # not saved -- the backward re-reads layer 1 through the folded pair table
@@ -300,7 +305,7 @@ def _backward(
         protection,
         nnei,
     )
-    return (d_edge_vec,) + (None,) * 28
+    return (d_edge_vec,) + (None,) * 29
 
 
 # ======================================================================
@@ -386,6 +391,7 @@ def _cpu_embedding(
     rcut: float,
     rcut_smth: float,
     protection: float,
+    basis_dim: int,
 ) -> tuple[torch.Tensor, ...]:
     """Environment matrix, embedding MLP and (strip) type-pair gate (fp32).
 
@@ -416,11 +422,22 @@ def _cpu_embedding(
         if smooth:
             gate = gate * sw
         gg = g * (1.0 + gate)
-    return rr, pre2, pre3, g, gg
+    moment_basis = rr
+    if basis_dim == 9:
+        moment_basis = build_dpa1_moment_basis(
+            rr,
+            ev,
+            sw,
+            dstd[center_type, 0:1],
+            edge_mask,
+            2,
+            protection,
+        )
+    return moment_basis, pre2, pre3, g, gg
 
 
 def _cpu_outputs(
-    rr: torch.Tensor,
+    moment_basis: torch.Tensor,
     gg: torch.Tensor,
     edge_index: torch.Tensor,
     edge_mask: torch.Tensor,
@@ -433,11 +450,17 @@ def _cpu_outputs(
     n_node: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     ggm = gg * edge_mask[:, None].to(gg.dtype)
-    outer = rr[:, :, None] * ggm[:, None, :]  # (E, 4, ng)
-    gr = torch.zeros(n_node, 4, ng, dtype=gg.dtype, device=gg.device)
+    outer = moment_basis[:, :, None] * ggm[:, None, :]
+    gr = torch.zeros(
+        n_node,
+        moment_basis.shape[-1],
+        ng,
+        dtype=gg.dtype,
+        device=gg.device,
+    )
     gr.index_add_(0, edge_index[1], outer)
     gr = gr / nnei
-    gr_t = gr.permute(0, 2, 1)  # (N, ng, 4)
+    gr_t = gr.permute(0, 2, 1)
     grrg = torch.matmul(gr_t, gr[:, :, :axis]).reshape(n_node, ng * axis)
     rot_mat = gr_t[:, :, 1:4].contiguous()
     if concat_tebd:
@@ -475,6 +498,7 @@ def _cpu_forward(
     rcut_smth: float,
     protection: float,
     nnei: float,
+    basis_dim: int,
 ) -> tuple[torch.Tensor, ...]:
     n_edge = edge_vec.shape[0]
     n_node = atype.shape[0]
@@ -482,7 +506,7 @@ def _cpu_forward(
     ntypes = type_embedding.shape[0]
     strip = gate_table.shape[0] > 0
     pair_table = _cpu_pair_table(type_embedding, w1, b1, type_one_side, strip)
-    rr, pre2, pre3, g, gg = _cpu_embedding(
+    moment_basis, pre2, pre3, g, gg = _cpu_embedding(
         edge_vec,
         edge_index,
         edge_mask,
@@ -508,9 +532,10 @@ def _cpu_forward(
         rcut,
         rcut_smth,
         protection,
+        basis_dim,
     )
     grrg, rot_mat, gr = _cpu_outputs(
-        rr,
+        moment_basis,
         gg,
         edge_index,
         edge_mask,
@@ -571,12 +596,13 @@ def _cpu_backward(
 ) -> torch.Tensor:
     n_node = atype.shape[0]
     ng = w3.shape[1]
+    basis_dim = gr.shape[1]
     strip = gate_table.shape[0] > 0
     n_pairs = gate_table.shape[0] if strip else pair_table.shape[0]
     ntypes = n_pairs if type_one_side else round(n_pairs**0.5)
     ev = edge_vec.detach().clone().requires_grad_(True)
     with torch.enable_grad():
-        rr, _pre2, _pre3, _g, gg = _cpu_embedding(
+        moment_basis, _pre2, _pre3, _g, gg = _cpu_embedding(
             ev,
             edge_index,
             edge_mask,
@@ -602,9 +628,10 @@ def _cpu_backward(
             rcut,
             rcut_smth,
             protection,
+            basis_dim,
         )
         grrg, rot_mat, _gr = _cpu_outputs(
-            rr,
+            moment_basis,
             gg,
             edge_index,
             edge_mask,
@@ -756,5 +783,6 @@ def dpa1_graph_descriptor(
         float(se.rcut_smth),
         float(se.env_protection),
         float(se.nnei),
+        (int(se.lmax) + 1) ** 2,
     )
     return grrg, rot_mat

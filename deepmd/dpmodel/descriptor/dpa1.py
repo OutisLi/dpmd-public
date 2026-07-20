@@ -98,6 +98,72 @@ def np_normalize(x: Array, axis: int = -1) -> Array:
     return x / xp.linalg.vector_norm(x, axis=axis, keepdims=True)
 
 
+def build_dpa1_moment_basis(
+    rr: Array,
+    diff: Array,
+    switch: Array,
+    radial_stddev: Array,
+    valid_mask: Array,
+    lmax: int,
+    protection: float,
+) -> Array:
+    """Build the DPA1 Cartesian moment basis through angular degree ``lmax``.
+
+    Parameters
+    ----------
+    rr
+        Normalized environment matrix with shape ``(..., 4)``.
+    diff
+        Neighbor displacement vectors with shape ``(..., 3)``.
+    switch
+        Smooth cutoff values with shape ``(..., 1)``.
+    radial_stddev
+        Scalar environment standard deviation with shape ``(..., 1)``.
+    valid_mask
+        Valid non-excluded neighbor mask with shape ``(...)``.
+    lmax
+        Maximum angular degree. Supported values are 1 and 2.
+    protection
+        Distance protection added to the radial denominator.
+
+    Returns
+    -------
+    Array
+        Moment basis with shape ``(..., (lmax + 1) ** 2)``.
+    """
+    if lmax == 1:
+        return rr
+
+    xp = array_api_compat.array_namespace(rr, diff, switch, radial_stddev)
+    distance_squared = xp.sum(diff * diff, axis=-1, keepdims=True)
+    direction_mask = distance_squared > 0.0
+    safe_distance = xp.sqrt(
+        xp.where(direction_mask, distance_squared, xp.ones_like(distance_squared))
+    )
+    direction = diff / safe_distance
+    basis_mask = valid_mask[..., None] & direction_mask
+    denominator = xp.where(
+        basis_mask,
+        safe_distance + protection,
+        xp.ones_like(safe_distance),
+    )
+    radial = switch / denominator / radial_stddev * xp.astype(basis_mask, switch.dtype)
+
+    x, y, z = direction[..., 0], direction[..., 1], direction[..., 2]
+    sqrt_three = math.sqrt(3.0)
+    degree_two = xp.stack(
+        [
+            sqrt_three * x * y,
+            sqrt_three * y * z,
+            0.5 * (3.0 * z * z - 1.0),
+            sqrt_three * x * z,
+            0.5 * sqrt_three * (x * x - y * y),
+        ],
+        axis=-1,
+    )
+    return xp.concat([rr, radial * degree_two], axis=-1)
+
+
 @BaseDescriptor.register("se_atten")
 @BaseDescriptor.register("dpa1")
 class DescrptDPA1(NativeOP, BaseDescriptor):
@@ -233,6 +299,9 @@ class DescrptDPA1(NativeOP, BaseDescriptor):
             Whether to use bias in the type embedding layer.
     type_map: list[str], Optional
             A list of strings. Give the name to each type of atoms.
+    lmax: int
+            Maximum angular degree of the Cartesian moment basis. Supported
+            values are 1 and 2.
     spin
             (Only support None to keep consistent with other backend references.)
             (Not used in this version. Not-none option is not implemented.)
@@ -289,6 +358,7 @@ class DescrptDPA1(NativeOP, BaseDescriptor):
         type_map: list[str] | None = None,
         # consistent with argcheck, not used though
         seed: int | list[int] | None = None,
+        lmax: int = 1,
     ) -> None:
         ## seed, uniform_seed, not included.
         # Ensure compatibility with the deprecated stripped_type_embedding option.
@@ -333,6 +403,7 @@ class DescrptDPA1(NativeOP, BaseDescriptor):
             ln_eps=ln_eps,
             seed=child_seed(seed, 0),
             trainable=trainable,
+            lmax=lmax,
         )
         self.use_econf_tebd = use_econf_tebd
         self.use_tebd_bias = use_tebd_bias
@@ -1013,6 +1084,8 @@ class DescrptDPA1(NativeOP, BaseDescriptor):
             "trainable": self.trainable,
             "spin": None,
         }
+        if obj.lmax != 1:
+            data["lmax"] = obj.lmax
         if obj.tebd_input_mode in ["strip"]:
             data.update({"embeddings_strip": obj.embeddings_strip.serialize()})
         if self.compress:
@@ -1212,6 +1285,9 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         Random seed for parameter initialization.
     trainable : bool, optional
         If the parameters are trainable.
+    lmax : int, optional
+        Maximum angular degree of the Cartesian moment basis. Supported values
+        are 1 and 2.
     """
 
     def __init__(
@@ -1243,6 +1319,7 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         smooth: bool = True,
         seed: int | list[int] | None = None,
         trainable: bool = True,
+        lmax: int = 1,
     ) -> None:
         self.rcut = rcut
         self.rcut_smth = rcut_smth
@@ -1255,6 +1332,9 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         self.neuron = neuron
         self.filter_neuron = self.neuron
         self.axis_neuron = axis_neuron
+        if lmax not in (1, 2):
+            raise ValueError(f"`lmax` must be 1 or 2, got {lmax}")
+        self.lmax = int(lmax)
         self.tebd_dim = tebd_dim
         self.tebd_input_mode = tebd_input_mode
         self.resnet_dt = resnet_dt
@@ -1636,6 +1716,23 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         rr = rr * xp.astype(exclude_mask[:, :, None], rr.dtype)
         # nfnl x nnei x 1
         ss = rr[..., 0:1]
+        moment_basis = rr
+        if self.lmax == 2:
+            diff_flat = xp.reshape(diff, (nf * nloc, nnei, 3))
+            radial_stddev = xp.take(
+                self.stddev,
+                xp.reshape(atype, (-1,)),
+                axis=0,
+            )[..., 0:1]
+            moment_basis = build_dpa1_moment_basis(
+                rr,
+                diff_flat,
+                sw,
+                radial_stddev,
+                nlist_mask,
+                self.lmax,
+                self.env_protection,
+            )
         geo_gr = None
         if self.tebd_input_mode in ["concat"]:
             # nfnl x tebd_dim
@@ -1729,7 +1826,7 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
                     self.compress_data[0],
                     self.compress_info[0],
                     ss_scalar,
-                    rr,
+                    moment_basis,
                     gg_t,
                     self.filter_neuron[-1],
                 )
@@ -1752,9 +1849,8 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
             gg = self.dpa1_attention(
                 gg, nlist_mask, input_r=input_r, sw=sw
             )  # shape is [nframes*nloc, self.neei, out_size]
-            # nfnl x ng x 4
-            # gr = xp.einsum("lni,lnj->lij", gg, rr)
-            gr = xp.sum(gg[:, :, :, None] * rr[:, :, None, :], axis=1)
+            # nfnl x ng x moment_dim
+            gr = xp.sum(gg[:, :, :, None] * moment_basis[:, :, None, :], axis=1)
             g2 = xp.reshape(gg, (nf, nloc, self.nnei, self.filter_neuron[-1]))
         else:
             gr = xp.permute_dims(geo_gr, (0, 2, 1))
@@ -1772,7 +1868,7 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
             xp.reshape(grrg, (nf, nloc, self.filter_neuron[-1] * self.axis_neuron)),
             g2,
             xp.reshape(dmatrix, (nf, nloc, self.nnei, 4))[..., 1:],
-            xp.reshape(gr[..., 1:], (nf, nloc, self.filter_neuron[-1], 3)),
+            xp.reshape(gr[..., 1:4], (nf, nloc, self.filter_neuron[-1], 3)),
             xp.reshape(sw, (nf, nloc, nnei, 1)),
         )
 
@@ -1867,6 +1963,18 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         )  # (E, 4), (E, 1) sw zeroed on padding
         # radial channel
         ss = rr[:, 0:1]  # (E, 1)
+        moment_basis = rr
+        if self.lmax == 2:
+            radial_stddev = xp.take(self.stddev[:, 0, 0:1], center_type, axis=0)
+            moment_basis = build_dpa1_moment_basis(
+                rr,
+                graph.edge_vec,
+                sw_e,
+                radial_stddev,
+                graph.edge_mask,
+                self.lmax,
+                self.env_protection,
+            )
         if self.tebd_input_mode == "concat":
             # neighbor / center type embeddings; ghost type == owner type so
             # gathering by the LOCAL owner (src) reproduces the dense neighbor tebd.
@@ -1895,10 +2003,10 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
             )
         # zero padding/guard edges BEFORE the segment sum
         gg = gg * xp.astype(graph.edge_mask[:, None], gg.dtype)
-        # outer product (replaces the dense gg[:,:,:,None] * rr[:,:,None,:])
-        outer = gg[:, :, None] * rr[:, None, :]  # (E, ng, 4)
+        # outer product (replaces the dense neighbor-axis moment reduction)
+        outer = gg[:, :, None] * moment_basis[:, None, :]  # (E, ng, moment_dim)
         # neighbor-axis reduction -> segment_sum over centers; divide by nnei
-        gr = segment_sum(outer, dst, n_total) / self.nnei  # (N, ng, 4)
+        gr = segment_sum(outer, dst, n_total) / self.nnei
         gr1 = gr[:, : self.axis_neuron, :]
         # nf x nloc x (ng x ng1)
         grrg = xp.sum(gr[:, :, None, :] * gr1[:, None, :, :], axis=3)  # (N, ng, ng1)
@@ -1910,7 +2018,7 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         # equivariant single-particle representation, dense-ABI slice gr[..., 1:]
         # (N, ng, 3); not cast, mirroring the dense block which leaves rot_mat in
         # the working precision before the descriptor-level @cast_precision.
-        rot_mat = gr[:, :, 1:]
+        rot_mat = gr[:, :, 1:4]
         return grrg, rot_mat
 
     def _graph_edge_gg_strip(
@@ -2166,6 +2274,8 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
                 "dstd": to_numpy_array(obj["dstd"]),
             },
         }
+        if obj.lmax != 1:
+            data["lmax"] = obj.lmax
         if obj.tebd_input_mode in ["strip"]:
             data.update({"embeddings_strip": obj.embeddings_strip.serialize()})
         return data

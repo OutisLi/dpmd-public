@@ -93,6 +93,7 @@ def _build_dpa1_expt(
     ntypes=2,
     axis_neuron=4,
     tebd_dim=8,
+    lmax=1,
 ):
     from deepmd.pt_expt.descriptor.dpa1 import (
         DescrptDPA1,
@@ -114,6 +115,7 @@ def _build_dpa1_expt(
         smooth_type_embedding=smooth,
         precision="float32",
         seed=1,
+        lmax=lmax,
     ).to(device)
     des.eval()
     return des
@@ -184,6 +186,12 @@ class TestDpa1GraphCudaDescriptor(unittest.TestCase):
 
     def test_parity_two_side_tanh(self) -> None:
         self._assert_parity(_build_dpa1_expt(self.device, [32, 64, 128]))
+
+    def test_parity_lmax_two(self) -> None:
+        self._assert_parity(_build_dpa1_expt(self.device, [16, 32, 64], lmax=2))
+
+    def test_parity_lmax_two_wide(self) -> None:
+        self._assert_parity(_build_dpa1_expt(self.device, [32, 64, 128], lmax=2))
 
     def test_parity_one_side_silu_resnet_dt(self) -> None:
         self._assert_parity(
@@ -305,6 +313,16 @@ class TestDpa1GraphCudaDescriptor(unittest.TestCase):
             _build_dpa1_expt(self.device, [32, 64, 128], tebd_input_mode="strip")
         )
 
+    def test_parity_strip_lmax_two(self) -> None:
+        self._assert_strip_parity(
+            _build_dpa1_expt(
+                self.device,
+                [16, 32, 64],
+                tebd_input_mode="strip",
+                lmax=2,
+            )
+        )
+
     def test_parity_strip_smooth_one_side_silu(self) -> None:
         self._assert_strip_parity(
             _build_dpa1_expt(
@@ -383,6 +401,7 @@ def _build_compressed_dpa1(
     ntypes=2,
     axis_neuron=4,
     tebd_dim=8,
+    lmax=1,
 ):
     """Strip DPA1 with the geometric embedding tabulated (``geo_compress``)."""
     des = _build_dpa1_expt(
@@ -396,6 +415,7 @@ def _build_compressed_dpa1(
         ntypes=ntypes,
         axis_neuron=axis_neuron,
         tebd_dim=tebd_dim,
+        lmax=lmax,
     )
     des.enable_compression(min_nbor_dist)
     des.to(device)
@@ -489,6 +509,9 @@ class TestDpa1GraphCudaCompress(unittest.TestCase):
     def test_parity_two_side_smooth(self) -> None:
         # NG = 64: eight warps active in the moment backward.
         self._assert_parity(_build_compressed_dpa1(self.device, [16, 32, 64]))
+
+    def test_parity_lmax_two(self) -> None:
+        self._assert_parity(_build_compressed_dpa1(self.device, [16, 32, 64], lmax=2))
 
     def test_parity_wide_two_side(self) -> None:
         # NG = 128: the moment backward covers the table in two channel blocks.
@@ -628,6 +651,7 @@ class TestDpa1GraphCudaCompress(unittest.TestCase):
             float(se.rcut_smth),
             float(se.env_protection),
             float(se.nnei),
+            (int(se.lmax) + 1) ** 2,
         )
         torch.testing.assert_close(descriptor, generic_descriptor)
 
@@ -1150,7 +1174,12 @@ class TestDpa1GraphEnergyForce(unittest.TestCase):
         )
 
         # A doubling stack exercises the retiled backward inside the fusion.
-        des = _build_dpa1_expt(self.device, [8, 16, 32], act="silu")
+        des = _build_dpa1_expt(
+            self.device,
+            [8, 16, 32],
+            act="silu",
+            lmax=2,
+        )
         fit = self._build_fitting(des.get_dim_out())
         graph, atype = self._graph(des)
         tebd = des.type_embedding.call()
@@ -1428,6 +1457,7 @@ class TestDpa1GraphCompressEnergyForce(unittest.TestCase):
             act="silu",
             ntypes=4,
             axis_neuron=16,
+            lmax=2,
         )
         self.assertTrue(mega_eligible(des))
         fit = self._build_fitting(des.get_dim_out(), ntypes=4)
