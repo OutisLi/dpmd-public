@@ -221,8 +221,8 @@ class DescrptDPA4C(DescrptDPA4CDP):
 
         if not mega_eligible(self):
             raise ValueError(
-                "DPA4C compressed CUDA supports channels 4, 8, 16, or 32, "
-                f"got {self.channels}"
+                "DPA4C compressed CUDA supports channels 4, 8, 16, 32, 64, "
+                f"or 128, got {self.channels}"
             )
         table, info = build_radial_table(self, table_stride_1)
         self._set_compression(table, info)

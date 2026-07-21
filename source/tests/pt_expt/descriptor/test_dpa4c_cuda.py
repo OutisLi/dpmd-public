@@ -107,7 +107,7 @@ def _arguments(
 
 
 @_GPU
-@pytest.mark.parametrize("channels", [4, 8, 16, 32])
+@pytest.mark.parametrize("channels", [4, 8, 16, 32, 64, 128])
 @pytest.mark.parametrize("canonical", [False, True])
 def test_forward_backward_parity(channels: int, canonical: bool) -> None:
     descriptor = _build_descriptor(channels)
@@ -196,10 +196,12 @@ def test_compressed_matches_uncompressed_descriptor() -> None:
 
 
 @_GPU
+@pytest.mark.parametrize("channels", [8, 64, 128])
 def test_descriptor_compression_routing_and_serialization(
     monkeypatch: pytest.MonkeyPatch,
+    channels: int,
 ) -> None:
-    descriptor = _build_descriptor(8)
+    descriptor = _build_descriptor(channels)
     graph, atype = _build_graph(descriptor, canonical=False)
     reference, _ = descriptor.call_graph(graph, atype)
     descriptor.enable_compression(min_nbor_dist=0.5)
@@ -270,8 +272,9 @@ def test_radial_table_is_c2_at_internal_knots() -> None:
 
 
 @_GPU
-def test_compressed_cutoff_matches_removed_topology() -> None:
-    descriptor = _build_descriptor(4)
+@pytest.mark.parametrize("channels", [4, 64, 128])
+def test_compressed_cutoff_matches_removed_topology(channels: int) -> None:
+    descriptor = _build_descriptor(channels)
     edge_index = torch.tensor(
         [[1, 0], [0, 1]],
         dtype=torch.long,
@@ -304,10 +307,12 @@ def test_compressed_cutoff_matches_removed_topology() -> None:
         graph,
         edge_mask=torch.zeros_like(graph.edge_mask),
     )
+    removed_edge = edge_vec.detach().clone().requires_grad_(True)
     removed, _removed_state = torch.ops.deepmd.dpa4c_graph_compress(
-        edge_vec.detach(),
+        removed_edge,
         *_arguments(descriptor, removed_graph, atype),
     )
+    (removed_gradient,) = torch.autograd.grad(removed.sum(), removed_edge)
     torch.testing.assert_close(retained, removed, atol=2e-6, rtol=2e-6)
     torch.testing.assert_close(
         gradient,
@@ -315,6 +320,94 @@ def test_compressed_cutoff_matches_removed_topology() -> None:
         atol=2e-6,
         rtol=0.0,
     )
+    torch.testing.assert_close(
+        removed_gradient,
+        torch.zeros_like(removed_gradient),
+        atol=0.0,
+        rtol=0.0,
+    )
+
+
+@_GPU
+@pytest.mark.parametrize("channels", [4, 64, 128])
+def test_in_row_mask_matches_removed_edge(channels: int) -> None:
+    descriptor = _build_descriptor(channels)
+    edge_index = torch.tensor(
+        [[1, 0], [0, 1]],
+        dtype=torch.long,
+        device="cuda",
+    )
+    edge_vec = torch.tensor(
+        [[1.0, 0.2, -0.1], [-0.7, 0.3, 0.4]],
+        dtype=torch.float32,
+        device="cuda",
+    )
+    graph = NeighborGraph(
+        n_node=torch.tensor([2], dtype=torch.long, device="cuda"),
+        edge_index=edge_index,
+        edge_vec=edge_vec,
+        edge_mask=torch.ones(2, dtype=torch.bool, device="cuda"),
+    )
+    graph = attach_edge_csr(graph, 2, canonicalize=False)
+    atype = torch.zeros(2, dtype=torch.long, device="cuda")
+
+    full, _full_state = torch.ops.deepmd.dpa4c_graph_compress(
+        edge_vec,
+        *_arguments(descriptor, graph, atype),
+    )
+    masked_graph = dataclasses.replace(
+        graph,
+        edge_mask=torch.tensor([True, False], dtype=torch.bool, device="cuda"),
+    )
+    masked_edge = edge_vec.detach().clone().requires_grad_(True)
+    masked, _masked_state = torch.ops.deepmd.dpa4c_graph_compress(
+        masked_edge,
+        *_arguments(descriptor, masked_graph, atype),
+    )
+    cotangent = torch.linspace(
+        -0.7,
+        1.3,
+        masked.numel(),
+        dtype=masked.dtype,
+        device=masked.device,
+    ).reshape_as(masked)
+    (masked_gradient,) = torch.autograd.grad(
+        (masked * cotangent).sum(),
+        masked_edge,
+    )
+
+    removed_edge = edge_vec[:1].detach().clone().requires_grad_(True)
+    removed_graph = NeighborGraph(
+        n_node=graph.n_node,
+        edge_index=edge_index[:, :1].contiguous(),
+        edge_vec=removed_edge,
+        edge_mask=torch.ones(1, dtype=torch.bool, device="cuda"),
+    )
+    removed_graph = attach_edge_csr(removed_graph, 2, canonicalize=False)
+    removed, _removed_state = torch.ops.deepmd.dpa4c_graph_compress(
+        removed_edge,
+        *_arguments(descriptor, removed_graph, atype),
+    )
+    (removed_gradient,) = torch.autograd.grad(
+        (removed * cotangent).sum(),
+        removed_edge,
+    )
+
+    assert not torch.allclose(full, masked)
+    torch.testing.assert_close(masked, removed, atol=2e-6, rtol=2e-6)
+    torch.testing.assert_close(
+        masked_gradient[:1],
+        removed_gradient,
+        atol=3e-6,
+        rtol=3e-5,
+    )
+    torch.testing.assert_close(
+        masked_gradient[1],
+        torch.zeros_like(masked_gradient[1]),
+        atol=0.0,
+        rtol=0.0,
+    )
+    assert torch.count_nonzero(masked_gradient[0]).item() > 0
 
 
 @_GPU
@@ -338,12 +431,13 @@ def test_int32_edge_indices() -> None:
 
 
 @_GPU
-def test_compact_canonical_parity() -> None:
+@pytest.mark.parametrize("channels", [8, 64, 128])
+def test_compact_canonical_parity(channels: int) -> None:
     from deepmd.kernels.cuda.dpa4c.canonical import (
         ensure_registered as ensure_canonical_registered,
     )
 
-    descriptor = _build_descriptor(8)
+    descriptor = _build_descriptor(channels)
     graph, atype = _build_graph(descriptor, canonical=True)
     arguments = _arguments(descriptor, graph, atype)
     ensure_canonical_registered()
@@ -387,7 +481,8 @@ def test_compact_canonical_parity() -> None:
 
 
 @_GPU
-def test_fused_energy_force_parity() -> None:
+@pytest.mark.parametrize("channels", [8, 64, 128])
+def test_fused_energy_force_parity(channels: int) -> None:
     from deepmd.kernels.cuda.edge_force_virial import (
         edge_force_virial,
     )
@@ -395,7 +490,7 @@ def test_fused_energy_force_parity() -> None:
         EnergyFittingNet,
     )
 
-    descriptor = _build_descriptor(8)
+    descriptor = _build_descriptor(channels)
     graph, atype = _build_graph(descriptor, canonical=False)
     table, info = build_radial_table(descriptor)
     descriptor.compress_data = table

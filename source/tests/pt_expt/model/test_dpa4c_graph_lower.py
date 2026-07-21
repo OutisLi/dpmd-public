@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-or-later
 
+import pytest
 import torch
 
 from deepmd.pt_expt.model.get_model import (
@@ -36,12 +37,12 @@ def _config() -> dict:
     }
 
 
-def _compressed_config() -> dict:
+def _compressed_config(channels: int = 8) -> dict:
     config = _config()
     descriptor = config["descriptor"]
-    descriptor["channels"] = 8
+    descriptor["channels"] = channels
     descriptor["n_radial"] = 8
-    descriptor["radial_mlp"] = [8]
+    descriptor["radial_mlp"] = [channels]
     descriptor["precision"] = "float32"
     fitting = config["fitting_net"]
     fitting["neuron"] = [32, 32]
@@ -149,9 +150,10 @@ def test_compressed_graph_export(monkeypatch) -> None:
     assert isinstance(exported, torch.export.ExportedProgram)
 
 
-def test_compact_canonical_graph_export(monkeypatch) -> None:
+@pytest.mark.parametrize("channels", [8, 64, 128])
+def test_compact_canonical_graph_export(monkeypatch, channels: int) -> None:
     monkeypatch.setenv("DP_CUDA_INFER", "2")
-    model = get_model(_compressed_config()).to("cpu").eval()
+    model = get_model(_compressed_config(channels)).to("cpu").eval()
     model.get_descriptor().enable_compression(min_nbor_dist=0.5)
     exported, metadata, _model_json, _output_keys = _trace_and_export(
         {"model": model.serialize()},
@@ -163,15 +165,20 @@ def test_compact_canonical_graph_export(monkeypatch) -> None:
     assert metadata["graph_edge_dtype"] == "float32"
 
 
-def test_auto_lower_kind_selects_compact_canonical() -> None:
-    model = get_model(_compressed_config()).to("cpu").eval()
+@pytest.mark.parametrize("channels", [8, 64, 128])
+def test_auto_lower_kind_selects_compact_canonical(channels: int) -> None:
+    model = get_model(_compressed_config(channels)).to("cpu").eval()
     model.get_descriptor().enable_compression(min_nbor_dist=0.5)
     data = {"model": model.serialize()}
     assert _resolve_lower_kind("model.pt2", data, "auto") == "dpa4c_canonical"
 
 
-def test_compressed_level_two_matches_autograd(monkeypatch) -> None:
-    model = get_model(_compressed_config()).to(env.DEVICE).eval()
+@pytest.mark.parametrize("channels", [8, 64, 128])
+def test_compressed_level_two_matches_autograd(
+    monkeypatch,
+    channels: int,
+) -> None:
+    model = get_model(_compressed_config(channels)).to(env.DEVICE).eval()
     model.get_descriptor().enable_compression(min_nbor_dist=0.5)
     monkeypatch.setenv("DP_CUDA_INFER", "1")
     reference = _run_graph(model)

@@ -45,7 +45,7 @@ __all__ = [
     "op_available",
 ]
 
-_CUDA_WIDTHS = (4, 8, 16, 32)
+_CUDA_WIDTHS = (4, 8, 16, 32, 64, 128)
 
 
 def op_available() -> bool:

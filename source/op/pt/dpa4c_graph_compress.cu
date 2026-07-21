@@ -2,14 +2,16 @@
 //
 // Compressed graph-native DPA4C descriptor.
 //
-// One warp owns one destination node. For widths below 32, independent
-// sub-warps process multiple edges concurrently and reduce equal channel lanes
-// before the second moment pass. The complete descriptor remains center-local:
-// radial spline lookup, first moments, edge feedback, second moments, and the
-// six-family invariant readout execute in one forward kernel. The forward
-// retains both center moments and the smooth-degree normalization; the
-// backward therefore needs only the two reverse edge scans required by the
-// feedback dependency and writes each edge-vector gradient exactly once.
+// Widths up to 32 assign one warp to each destination node. Independent
+// sub-warps process multiple edges concurrently when the channel width permits.
+// Widths above 32 assign one thread block to each node and one thread to each
+// channel, preserving channel-local state without multiplying register usage.
+//
+// The complete descriptor remains center-local: radial spline lookup, first
+// moments, edge feedback, second moments, and the six-family invariant readout
+// execute in one forward kernel. The forward retains both center moments and
+// the smooth-degree normalization; the backward therefore needs only the two
+// reverse edge scans required by the feedback dependency.
 
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
@@ -428,6 +430,37 @@ __device__ __forceinline__ Matrix3 matrix_product(const Matrix3& left,
   return output;
 }
 
+__device__ __forceinline__ void assemble_invariants(float scalar,
+                                                    const float (&vector)[3],
+                                                    const float (&packed)[5],
+                                                    Matrix3& tensor,
+                                                    float (&invariants)[6]) {
+  tensor = packed_to_stf(packed[0], packed[1], packed[2], packed[3], packed[4]);
+  float tensor_vector[3];
+  matrix_vector(tensor, vector, tensor_vector);
+  const Matrix3 tensor_squared = matrix_product(tensor, tensor);
+  const Matrix3 tensor_cubed = matrix_product(tensor_squared, tensor);
+  invariants[0] = scalar;
+  invariants[1] =
+      vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2];
+  invariants[2] = 0.0f;
+#pragma unroll
+  for (int row = 0; row < 3; ++row) {
+#pragma unroll
+    for (int column = 0; column < 3; ++column) {
+      invariants[2] = fmaf(tensor.value[row][column], tensor.value[row][column],
+                           invariants[2]);
+    }
+  }
+  invariants[3] = vector[0] * tensor_vector[0] + vector[1] * tensor_vector[1] +
+                  vector[2] * tensor_vector[2];
+  invariants[4] = tensor_cubed.value[0][0] + tensor_cubed.value[1][1] +
+                  tensor_cubed.value[2][2];
+  invariants[5] = tensor_vector[0] * tensor_vector[0] +
+                  tensor_vector[1] * tensor_vector[1] +
+                  tensor_vector[2] * tensor_vector[2];
+}
+
 template <int Width>
 __device__ __forceinline__ void project_invariants(
     long node,
@@ -487,30 +520,48 @@ __device__ __forceinline__ void project_invariants(
     scalar +=
         __ldg(type_embedding + static_cast<long>(center_type) * Width + lane);
   }
-  tensor = packed_to_stf(packed[0], packed[1], packed[2], packed[3], packed[4]);
-  float tensor_vector[3];
-  matrix_vector(tensor, vector, tensor_vector);
-  const Matrix3 tensor_squared = matrix_product(tensor, tensor);
-  const Matrix3 tensor_cubed = matrix_product(tensor_squared, tensor);
-  invariants[0] = scalar;
-  invariants[1] =
-      vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2];
-  invariants[2] = 0.0f;
+  assemble_invariants(scalar, vector, packed, tensor, invariants);
+}
+
+template <int Width>
+__device__ __forceinline__ void project_invariants_wide(
+    int channel,
+    int center_type,
+    const float* second,
+    const float* type_embedding,
+    const float* scalar_weight,
+    const float* vector_weight,
+    const float* tensor_weight,
+    float& scalar,
+    float (&vector)[3],
+    Matrix3& tensor,
+    float (&invariants)[6]) {
+  static_assert(Width > kWarpSize);
+  scalar = 0.0f;
 #pragma unroll
-  for (int row = 0; row < 3; ++row) {
+  for (int component = 0; component < 3; ++component) {
+    vector[component] = 0.0f;
+  }
+  float packed[5] = {};
+  for (int input = 0; input < Width; ++input) {
+    const long weight_offset = static_cast<long>(input) * Width + channel;
+    scalar = fmaf(second[input], __ldg(scalar_weight + weight_offset), scalar);
 #pragma unroll
-    for (int column = 0; column < 3; ++column) {
-      invariants[2] = fmaf(tensor.value[row][column], tensor.value[row][column],
-                           invariants[2]);
+    for (int component = 0; component < 3; ++component) {
+      vector[component] =
+          fmaf(second[(1 + component) * Width + input],
+               __ldg(vector_weight + weight_offset), vector[component]);
+    }
+#pragma unroll
+    for (int component = 0; component < 5; ++component) {
+      packed[component] =
+          fmaf(second[(4 + component) * Width + input],
+               __ldg(tensor_weight + weight_offset), packed[component]);
     }
   }
-  invariants[3] = vector[0] * tensor_vector[0] + vector[1] * tensor_vector[1] +
-                  vector[2] * tensor_vector[2];
-  invariants[4] = tensor_cubed.value[0][0] + tensor_cubed.value[1][1] +
-                  tensor_cubed.value[2][2];
-  invariants[5] = tensor_vector[0] * tensor_vector[0] +
-                  tensor_vector[1] * tensor_vector[1] +
-                  tensor_vector[2] * tensor_vector[2];
+  scalar +=
+      __ldg(type_embedding + static_cast<long>(center_type) * Width + channel);
+  assemble_invariants(scalar, vector, packed, tensor, invariants);
 }
 
 template <int Width, bool Canonical, typename index_t>
@@ -580,6 +631,49 @@ __global__ __launch_bounds__(kThreads, 2) void dpa4c_forward_kernel(
   }
 }
 
+__device__ __forceinline__ void differentiate_invariants(
+    const float (&vector)[3],
+    const Matrix3& tensor,
+    const float (&d_invariant)[6],
+    float& d_scalar,
+    float (&d_vector)[3],
+    float (&d_packed)[5]) {
+  float tensor_vector[3];
+  matrix_vector(tensor, vector, tensor_vector);
+  float tensor2_vector[3];
+  matrix_vector(tensor, tensor_vector, tensor2_vector);
+#pragma unroll
+  for (int component = 0; component < 3; ++component) {
+    d_vector[component] = 2.0f * d_invariant[1] * vector[component] +
+                          2.0f * d_invariant[3] * tensor_vector[component] +
+                          2.0f * d_invariant[5] * tensor2_vector[component];
+  }
+
+  const Matrix3 tensor_squared = matrix_product(tensor, tensor);
+  Matrix3 d_tensor{};
+#pragma unroll
+  for (int row = 0; row < 3; ++row) {
+#pragma unroll
+    for (int column = 0; column < 3; ++column) {
+      d_tensor.value[row][column] =
+          2.0f * d_invariant[2] * tensor.value[row][column] +
+          d_invariant[3] * vector[row] * vector[column] +
+          3.0f * d_invariant[4] * tensor_squared.value[row][column] +
+          2.0f * d_invariant[5] * tensor_vector[row] * vector[column];
+    }
+  }
+  constexpr float kInvSqrtTwo = 0.7071067811865475244f;
+  constexpr float kInvSqrtSix = 0.4082482904638630164f;
+  d_packed[0] = (d_tensor.value[0][1] + d_tensor.value[1][0]) * kInvSqrtTwo;
+  d_packed[1] = (d_tensor.value[1][2] + d_tensor.value[2][1]) * kInvSqrtTwo;
+  d_packed[2] = (-d_tensor.value[0][0] - d_tensor.value[1][1] +
+                 2.0f * d_tensor.value[2][2]) *
+                kInvSqrtSix;
+  d_packed[3] = (d_tensor.value[0][2] + d_tensor.value[2][0]) * kInvSqrtTwo;
+  d_packed[4] = (d_tensor.value[0][0] - d_tensor.value[1][1]) * kInvSqrtTwo;
+  d_scalar = d_invariant[0];
+}
+
 template <int Width>
 __device__ __forceinline__ void invariant_backward(
     long node,
@@ -609,43 +703,11 @@ __device__ __forceinline__ void invariant_backward(
     }
   }
 
-  float tensor_vector[3];
-  matrix_vector(tensor, vector, tensor_vector);
-  float tensor2_vector[3];
-  matrix_vector(tensor, tensor_vector, tensor2_vector);
   float d_vector[3];
-#pragma unroll
-  for (int component = 0; component < 3; ++component) {
-    d_vector[component] = 2.0f * d_invariant[1] * vector[component] +
-                          2.0f * d_invariant[3] * tensor_vector[component] +
-                          2.0f * d_invariant[5] * tensor2_vector[component];
-  }
-
-  const Matrix3 tensor_squared = matrix_product(tensor, tensor);
-  Matrix3 d_tensor{};
-#pragma unroll
-  for (int row = 0; row < 3; ++row) {
-#pragma unroll
-    for (int column = 0; column < 3; ++column) {
-      d_tensor.value[row][column] =
-          2.0f * d_invariant[2] * tensor.value[row][column] +
-          d_invariant[3] * vector[row] * vector[column] +
-          3.0f * d_invariant[4] * tensor_squared.value[row][column] +
-          2.0f * d_invariant[5] * tensor_vector[row] * vector[column];
-    }
-  }
-  constexpr float kInvSqrtTwo = 0.7071067811865475244f;
-  constexpr float kInvSqrtSix = 0.4082482904638630164f;
   float d_packed[5];
-  d_packed[0] = (d_tensor.value[0][1] + d_tensor.value[1][0]) * kInvSqrtTwo;
-  d_packed[1] = (d_tensor.value[1][2] + d_tensor.value[2][1]) * kInvSqrtTwo;
-  d_packed[2] = (-d_tensor.value[0][0] - d_tensor.value[1][1] +
-                 2.0f * d_tensor.value[2][2]) *
-                kInvSqrtSix;
-  d_packed[3] = (d_tensor.value[0][2] + d_tensor.value[2][0]) * kInvSqrtTwo;
-  d_packed[4] = (d_tensor.value[0][0] - d_tensor.value[1][1]) * kInvSqrtTwo;
-
-  float d_scalar = d_invariant[0];
+  float d_scalar;
+  differentiate_invariants(vector, tensor, d_invariant, d_scalar, d_vector,
+                           d_packed);
 #pragma unroll
   for (int k = 0; k < kBasisDim; ++k) {
     d_second[k] = 0.0f;
@@ -985,6 +1047,463 @@ __global__ __launch_bounds__(kThreads, 2) void dpa4c_backward_kernel(
   }
 }
 
+template <int Width>
+__device__ __forceinline__ float block_sum_wide(float value, float* workspace) {
+  static_assert(Width > kWarpSize && Width % kWarpSize == 0);
+  constexpr int kWarps = Width / kWarpSize;
+  const int lane = threadIdx.x & 31;
+  const int warp = threadIdx.x >> 5;
+  value = warp_sum(value);
+  if (lane == 0) {
+    workspace[warp] = value;
+  }
+  __syncthreads();
+  if (warp == 0) {
+    const float partial = lane < kWarps ? workspace[lane] : 0.0f;
+    const float total = warp_sum(partial);
+    if (lane == 0) {
+      workspace[0] = total;
+    }
+  }
+  __syncthreads();
+  return workspace[0];
+}
+
+template <int Width, bool Canonical, typename index_t>
+__global__ __launch_bounds__(Width, 2) void dpa4c_wide_forward_kernel(
+    long node_count,
+    long edge_count,
+    int interval_count,
+    float table_stride,
+    float table_max,
+    float rcut,
+    float eps,
+    float degree_floor,
+    const float* __restrict__ edge_vec,
+    const index_t* __restrict__ edge_index,
+    const bool* __restrict__ edge_mask,
+    const index_t* __restrict__ destination_order,
+    const long* __restrict__ destination_row_ptr,
+    const long* __restrict__ atype,
+    const float* __restrict__ table,
+    const float* __restrict__ type_embedding,
+    const float* __restrict__ feedback_weight,
+    const float* __restrict__ scalar_weight,
+    const float* __restrict__ vector_weight,
+    const float* __restrict__ tensor_weight,
+    float* __restrict__ descriptor,
+    float* __restrict__ state) {
+  static_assert(Width == 64 || Width == 128);
+  const int channel = threadIdx.x;
+  const int lane = channel & 31;
+  const long node = blockIdx.x;
+  if (node >= node_count) {
+    return;
+  }
+  const int center_type = static_cast<int>(atype[node]);
+  const long begin = destination_row_ptr[node];
+  const long end = destination_row_ptr[node + 1];
+  float first[kBasisDim] = {};
+  float second[kBasisDim] = {};
+  float degree = 0.0f;
+
+  // === Pass 1. Accumulate one moment channel per thread ===
+  for (long position = begin; position < end; ++position) {
+    const long edge = edge_at_position<Canonical>(position, destination_order);
+    if (edge_mask != nullptr && !edge_mask[edge]) {
+      continue;
+    }
+    EdgeGeometry geometry{};
+    TableLocation location{};
+    if (lane == 0) {
+      geometry = load_geometry<index_t>(edge, edge_count, rcut, eps, edge_vec,
+                                        edge_index, atype);
+      location = locate_table(geometry.radius, table_stride, table_max,
+                              interval_count);
+    }
+    geometry = broadcast_geometry<kWarpSize>(geometry, 0, kWarpMask);
+    location = broadcast_location<kWarpSize>(location, 0, kWarpMask);
+    const float amplitude = edge_amplitude<Width>(
+        geometry, location, channel, center_type, table, type_embedding);
+#pragma unroll
+    for (int k = 0; k < kBasisDim; ++k) {
+      first[k] = fmaf(amplitude, geometry.basis[k], first[k]);
+    }
+    if (channel == 0) {
+      degree = fmaf(geometry.envelope, geometry.envelope, degree);
+    }
+  }
+
+  __shared__ float normalizer_shared;
+  if (channel == 0) {
+    normalizer_shared = rsqrtf(degree + degree_floor);
+  }
+  __syncthreads();
+  const float normalizer = normalizer_shared;
+#pragma unroll
+  for (int k = 0; k < kBasisDim; ++k) {
+    first[k] *= normalizer;
+  }
+
+  // === Pass 2. Apply channel-wise feedback to every edge ===
+  for (long position = begin; position < end; ++position) {
+    const long edge = edge_at_position<Canonical>(position, destination_order);
+    if (edge_mask != nullptr && !edge_mask[edge]) {
+      continue;
+    }
+    EdgeGeometry geometry{};
+    TableLocation location{};
+    if (lane == 0) {
+      geometry = load_geometry<index_t>(edge, edge_count, rcut, eps, edge_vec,
+                                        edge_index, atype);
+      location = locate_table(geometry.radius, table_stride, table_max,
+                              interval_count);
+    }
+    geometry = broadcast_geometry<kWarpSize>(geometry, 0, kWarpMask);
+    location = broadcast_location<kWarpSize>(location, 0, kWarpMask);
+    const float amplitude = edge_amplitude<Width>(
+        geometry, location, channel, center_type, table, type_embedding);
+    float feedback_input = 0.0f;
+    const int begins[3] = {0, 1, 4};
+    const int ends[3] = {1, 4, 9};
+#pragma unroll
+    for (int degree_index = 0; degree_index < 3; ++degree_index) {
+      float projection = 0.0f;
+      float basis_norm = 0.0f;
+#pragma unroll
+      for (int k = begins[degree_index]; k < ends[degree_index]; ++k) {
+        projection = fmaf(first[k], geometry.basis[k], projection);
+        basis_norm = fmaf(geometry.basis[k], geometry.basis[k], basis_norm);
+      }
+      const float context = projection - normalizer * amplitude * basis_norm;
+      feedback_input = fmaf(__ldg(feedback_weight + channel * 3 + degree_index),
+                            context, feedback_input);
+    }
+    const float modulated =
+        amplitude * (1.0f + gate_activation(feedback_input));
+#pragma unroll
+    for (int k = 0; k < kBasisDim; ++k) {
+      second[k] = fmaf(modulated, geometry.basis[k], second[k]);
+    }
+  }
+#pragma unroll
+  for (int k = 0; k < kBasisDim; ++k) {
+    second[k] *= normalizer;
+    state[(node * 19 + k) * Width + channel] = first[k];
+    state[(node * 19 + 9 + k) * Width + channel] = second[k];
+  }
+  state[(node * 19 + 18) * Width + channel] = normalizer;
+
+  __shared__ float second_shared[kBasisDim * Width];
+#pragma unroll
+  for (int k = 0; k < kBasisDim; ++k) {
+    second_shared[k * Width + channel] = second[k];
+  }
+  __syncthreads();
+
+  float scalar;
+  float vector[3];
+  Matrix3 tensor;
+  float invariants[6];
+  project_invariants_wide<Width>(
+      channel, center_type, second_shared, type_embedding, scalar_weight,
+      vector_weight, tensor_weight, scalar, vector, tensor, invariants);
+#pragma unroll
+  for (int family = 0; family < 6; ++family) {
+    descriptor[(node * Width + channel) * 6 + family] = invariants[family];
+  }
+}
+
+template <int Width, bool Canonical, typename index_t>
+__global__ __launch_bounds__(Width, 2) void dpa4c_wide_backward_kernel(
+    long node_count,
+    long edge_count,
+    int interval_count,
+    float table_stride,
+    float table_max,
+    float rcut,
+    float eps,
+    float degree_floor,
+    const float* __restrict__ descriptor_gradient,
+    const float* __restrict__ edge_vec,
+    const index_t* __restrict__ edge_index,
+    const bool* __restrict__ edge_mask,
+    const index_t* __restrict__ destination_order,
+    const long* __restrict__ destination_row_ptr,
+    const long* __restrict__ atype,
+    const float* __restrict__ table,
+    const float* __restrict__ type_embedding,
+    const float* __restrict__ feedback_weight,
+    const float* __restrict__ scalar_weight,
+    const float* __restrict__ vector_weight,
+    const float* __restrict__ tensor_weight,
+    const float* __restrict__ state,
+    float* __restrict__ edge_gradient) {
+  static_assert(Width == 64 || Width == 128);
+  const int channel = threadIdx.x;
+  const int lane = channel & 31;
+  const int channel_warp = channel >> 5;
+  const long node = blockIdx.x;
+  if (node >= node_count) {
+    return;
+  }
+  const int center_type = static_cast<int>(atype[node]);
+  const long begin = destination_row_ptr[node];
+  const long end = destination_row_ptr[node + 1];
+
+  // === Step 1. Load center state and reverse the invariant projection ===
+  float first[kBasisDim];
+  float second[kBasisDim];
+#pragma unroll
+  for (int k = 0; k < kBasisDim; ++k) {
+    first[k] = __ldg(state + (node * 19 + k) * Width + channel);
+    second[k] = __ldg(state + (node * 19 + 9 + k) * Width + channel);
+  }
+  const float normalizer = __ldg(state + (node * 19 + 18) * Width);
+
+  __shared__ float workspace[kBasisDim * Width];
+  __shared__ float reduction_workspace[Width / kWarpSize];
+#pragma unroll
+  for (int k = 0; k < kBasisDim; ++k) {
+    workspace[k * Width + channel] = second[k];
+  }
+  __syncthreads();
+
+  float scalar;
+  float vector[3];
+  Matrix3 tensor;
+  float invariants[6];
+  project_invariants_wide<Width>(
+      channel, center_type, workspace, type_embedding, scalar_weight,
+      vector_weight, tensor_weight, scalar, vector, tensor, invariants);
+  float d_invariant[6];
+#pragma unroll
+  for (int family = 0; family < 6; ++family) {
+    d_invariant[family] =
+        __ldg(descriptor_gradient + (node * Width + channel) * 6 + family);
+  }
+  float d_scalar;
+  float d_vector[3];
+  float d_packed[5];
+  differentiate_invariants(vector, tensor, d_invariant, d_scalar, d_vector,
+                           d_packed);
+
+  // All threads finish reading the moments before the workspace is reused for
+  // the projected-output gradients.
+  __syncthreads();
+  workspace[channel] = d_scalar;
+#pragma unroll
+  for (int component = 0; component < 3; ++component) {
+    workspace[(1 + component) * Width + channel] = d_vector[component];
+  }
+#pragma unroll
+  for (int component = 0; component < 5; ++component) {
+    workspace[(4 + component) * Width + channel] = d_packed[component];
+  }
+  __syncthreads();
+
+  float d_second[kBasisDim] = {};
+  for (int output = 0; output < Width; ++output) {
+    const long weight_offset = static_cast<long>(channel) * Width + output;
+    d_second[0] = fmaf(workspace[output], __ldg(scalar_weight + weight_offset),
+                       d_second[0]);
+#pragma unroll
+    for (int component = 0; component < 3; ++component) {
+      d_second[1 + component] =
+          fmaf(workspace[(1 + component) * Width + output],
+               __ldg(vector_weight + weight_offset), d_second[1 + component]);
+    }
+#pragma unroll
+    for (int component = 0; component < 5; ++component) {
+      d_second[4 + component] =
+          fmaf(workspace[(4 + component) * Width + output],
+               __ldg(tensor_weight + weight_offset), d_second[4 + component]);
+    }
+  }
+  float d_sum_second[kBasisDim];
+#pragma unroll
+  for (int k = 0; k < kBasisDim; ++k) {
+    d_sum_second[k] = normalizer * d_second[k];
+  }
+
+  // === Step 2. Accumulate feedback derivatives into the first moments ===
+  float d_first[kBasisDim] = {};
+  float d_normalizer_edges = 0.0f;
+  for (long position = begin; position < end; ++position) {
+    const long edge = edge_at_position<Canonical>(position, destination_order);
+    if (edge_mask != nullptr && !edge_mask[edge]) {
+      continue;
+    }
+    EdgeGeometry geometry{};
+    TableLocation location{};
+    if (lane == 0) {
+      geometry = load_geometry<index_t>(edge, edge_count, rcut, eps, edge_vec,
+                                        edge_index, atype);
+      location = locate_table(geometry.radius, table_stride, table_max,
+                              interval_count);
+    }
+    geometry = broadcast_geometry<kWarpSize>(geometry, 0, kWarpMask);
+    location = broadcast_location<kWarpSize>(location, 0, kWarpMask);
+    const float amplitude = edge_amplitude<Width>(
+        geometry, location, channel, center_type, table, type_embedding);
+    float context[3] = {};
+    float basis_norm[3] = {};
+    const int begins[3] = {0, 1, 4};
+    const int ends[3] = {1, 4, 9};
+#pragma unroll
+    for (int degree_index = 0; degree_index < 3; ++degree_index) {
+#pragma unroll
+      for (int k = begins[degree_index]; k < ends[degree_index]; ++k) {
+        context[degree_index] =
+            fmaf(first[k], geometry.basis[k], context[degree_index]);
+        basis_norm[degree_index] = fmaf(geometry.basis[k], geometry.basis[k],
+                                        basis_norm[degree_index]);
+      }
+      context[degree_index] -=
+          normalizer * amplitude * basis_norm[degree_index];
+    }
+    float activation_input = 0.0f;
+#pragma unroll
+    for (int degree_index = 0; degree_index < 3; ++degree_index) {
+      activation_input =
+          fmaf(__ldg(feedback_weight + channel * 3 + degree_index),
+               context[degree_index], activation_input);
+    }
+    const float activation = gate_activation(activation_input);
+    float d_modulated = 0.0f;
+#pragma unroll
+    for (int k = 0; k < kBasisDim; ++k) {
+      d_modulated = fmaf(d_sum_second[k], geometry.basis[k], d_modulated);
+    }
+    const float d_activation_input =
+        d_modulated * amplitude * gate_derivative(activation_input);
+#pragma unroll
+    for (int degree_index = 0; degree_index < 3; ++degree_index) {
+      const float d_context =
+          d_activation_input *
+          __ldg(feedback_weight + channel * 3 + degree_index);
+#pragma unroll
+      for (int k = begins[degree_index]; k < ends[degree_index]; ++k) {
+        d_first[k] = fmaf(d_context, geometry.basis[k], d_first[k]);
+      }
+      d_normalizer_edges -= d_context * amplitude * basis_norm[degree_index];
+    }
+  }
+
+  float normalization_dot = 0.0f;
+#pragma unroll
+  for (int k = 0; k < kBasisDim; ++k) {
+    normalization_dot = fmaf(d_first[k], first[k], normalization_dot);
+    normalization_dot = fmaf(d_second[k], second[k], normalization_dot);
+  }
+  float d_normalizer =
+      d_normalizer_edges + __fdividef(normalization_dot, normalizer);
+  d_normalizer = block_sum_wide<Width>(d_normalizer, reduction_workspace);
+  const float d_degree =
+      -0.5f * d_normalizer * normalizer * normalizer * normalizer;
+  float d_sum_first[kBasisDim];
+#pragma unroll
+  for (int k = 0; k < kBasisDim; ++k) {
+    d_sum_first[k] = normalizer * d_first[k];
+  }
+
+  // === Step 3. Recompute edges and reduce channel VJPs within each warp ===
+  for (long position = begin; position < end; ++position) {
+    const long edge = edge_at_position<Canonical>(position, destination_order);
+    if (edge_mask != nullptr && !edge_mask[edge]) {
+      continue;
+    }
+    EdgeGeometry geometry{};
+    TableLocation location{};
+    if (lane == 0) {
+      geometry = load_geometry<index_t>(edge, edge_count, rcut, eps, edge_vec,
+                                        edge_index, atype);
+      location = locate_table(geometry.radius, table_stride, table_max,
+                              interval_count);
+    }
+    geometry = broadcast_geometry<kWarpSize>(geometry, 0, kWarpMask);
+    location = broadcast_location<kWarpSize>(location, 0, kWarpMask);
+    const float2 radial =
+        evaluate_table_with_derivative(table, location, channel, Width);
+    const float type_value =
+        __ldg(type_embedding + static_cast<long>(center_type) * Width +
+              channel) +
+        __ldg(type_embedding + static_cast<long>(geometry.source_type) * Width +
+              channel);
+    const float amplitude = radial.x + geometry.envelope * type_value;
+    float context[3] = {};
+    float basis_norm[3] = {};
+    const int begins[3] = {0, 1, 4};
+    const int ends[3] = {1, 4, 9};
+#pragma unroll
+    for (int degree_index = 0; degree_index < 3; ++degree_index) {
+#pragma unroll
+      for (int k = begins[degree_index]; k < ends[degree_index]; ++k) {
+        context[degree_index] =
+            fmaf(first[k], geometry.basis[k], context[degree_index]);
+        basis_norm[degree_index] = fmaf(geometry.basis[k], geometry.basis[k],
+                                        basis_norm[degree_index]);
+      }
+      context[degree_index] -=
+          normalizer * amplitude * basis_norm[degree_index];
+    }
+    float activation_input = 0.0f;
+#pragma unroll
+    for (int degree_index = 0; degree_index < 3; ++degree_index) {
+      activation_input =
+          fmaf(__ldg(feedback_weight + channel * 3 + degree_index),
+               context[degree_index], activation_input);
+    }
+    const float activation = gate_activation(activation_input);
+    const float modulated = amplitude * (1.0f + activation);
+    float d_modulated = 0.0f;
+    float d_basis[kBasisDim] = {};
+#pragma unroll
+    for (int k = 0; k < kBasisDim; ++k) {
+      d_modulated = fmaf(d_sum_second[k], geometry.basis[k], d_modulated);
+      d_basis[k] = d_sum_second[k] * modulated;
+    }
+    const float d_activation_input =
+        d_modulated * amplitude * gate_derivative(activation_input);
+    float d_amplitude = d_modulated * (1.0f + activation);
+#pragma unroll
+    for (int degree_index = 0; degree_index < 3; ++degree_index) {
+      const float d_context =
+          d_activation_input *
+          __ldg(feedback_weight + channel * 3 + degree_index);
+      d_amplitude -= d_context * normalizer * basis_norm[degree_index];
+#pragma unroll
+      for (int k = begins[degree_index]; k < ends[degree_index]; ++k) {
+        d_basis[k] += d_context * (first[k] - 2.0f * normalizer * amplitude *
+                                                  geometry.basis[k]);
+      }
+    }
+#pragma unroll
+    for (int k = 0; k < kBasisDim; ++k) {
+      d_amplitude = fmaf(d_sum_first[k], geometry.basis[k], d_amplitude);
+      d_basis[k] = fmaf(d_sum_first[k], amplitude, d_basis[k]);
+    }
+    float radial_gradient = warp_sum(d_amplitude * radial.y);
+    float envelope_gradient = warp_sum(d_amplitude * type_value);
+#pragma unroll
+    for (int k = 0; k < kBasisDim; ++k) {
+      d_basis[k] = warp_sum(d_basis[k]);
+    }
+    if (lane == 0) {
+      if (channel_warp == 0) {
+        envelope_gradient += 2.0f * geometry.envelope * d_degree;
+      }
+      radial_gradient +=
+          envelope_gradient * c3_envelope_derivative(geometry.radius, rcut);
+      float output[3];
+      basis_vjp(geometry, d_basis, radial_gradient, output);
+      atomicAdd(edge_gradient + edge * 3 + 0, output[0]);
+      atomicAdd(edge_gradient + edge * 3 + 1, output[1]);
+      atomicAdd(edge_gradient + edge * 3 + 2, output[2]);
+    }
+  }
+}
+
 template <bool Canonical, typename index_t>
 __global__ void zero_padding_kernel(long node_count,
                                     long edge_count,
@@ -1026,22 +1545,38 @@ void launch_forward(long node_count,
                     torch::Tensor& descriptor,
                     torch::Tensor& state,
                     cudaStream_t stream) {
-  const int warps_per_block = kThreads / kWarpSize;
-  const int blocks =
-      static_cast<int>((node_count + warps_per_block - 1) / warps_per_block);
-  dpa4c_forward_kernel<Width, Canonical, index_t>
-      <<<blocks, kThreads, 0, stream>>>(
-          node_count, edge_count, interval_count, table_stride, table_max, rcut,
-          eps, degree_floor, edge_vec.data_ptr<float>(),
-          edge_index.data_ptr<index_t>(),
-          edge_mask.numel() ? edge_mask.data_ptr<bool>() : nullptr,
-          destination_order.numel() ? destination_order.data_ptr<index_t>()
-                                    : nullptr,
-          destination_row_ptr.data_ptr<long>(), atype.data_ptr<long>(),
-          table.data_ptr<float>(), type_embedding.data_ptr<float>(),
-          feedback_weight.data_ptr<float>(), scalar_weight.data_ptr<float>(),
-          vector_weight.data_ptr<float>(), tensor_weight.data_ptr<float>(),
-          descriptor.data_ptr<float>(), state.data_ptr<float>());
+  if constexpr (Width <= kWarpSize) {
+    const int warps_per_block = kThreads / kWarpSize;
+    const int blocks =
+        static_cast<int>((node_count + warps_per_block - 1) / warps_per_block);
+    dpa4c_forward_kernel<Width, Canonical, index_t>
+        <<<blocks, kThreads, 0, stream>>>(
+            node_count, edge_count, interval_count, table_stride, table_max,
+            rcut, eps, degree_floor, edge_vec.data_ptr<float>(),
+            edge_index.data_ptr<index_t>(),
+            edge_mask.numel() ? edge_mask.data_ptr<bool>() : nullptr,
+            destination_order.numel() ? destination_order.data_ptr<index_t>()
+                                      : nullptr,
+            destination_row_ptr.data_ptr<long>(), atype.data_ptr<long>(),
+            table.data_ptr<float>(), type_embedding.data_ptr<float>(),
+            feedback_weight.data_ptr<float>(), scalar_weight.data_ptr<float>(),
+            vector_weight.data_ptr<float>(), tensor_weight.data_ptr<float>(),
+            descriptor.data_ptr<float>(), state.data_ptr<float>());
+  } else {
+    dpa4c_wide_forward_kernel<Width, Canonical, index_t>
+        <<<static_cast<int>(node_count), Width, 0, stream>>>(
+            node_count, edge_count, interval_count, table_stride, table_max,
+            rcut, eps, degree_floor, edge_vec.data_ptr<float>(),
+            edge_index.data_ptr<index_t>(),
+            edge_mask.numel() ? edge_mask.data_ptr<bool>() : nullptr,
+            destination_order.numel() ? destination_order.data_ptr<index_t>()
+                                      : nullptr,
+            destination_row_ptr.data_ptr<long>(), atype.data_ptr<long>(),
+            table.data_ptr<float>(), type_embedding.data_ptr<float>(),
+            feedback_weight.data_ptr<float>(), scalar_weight.data_ptr<float>(),
+            vector_weight.data_ptr<float>(), tensor_weight.data_ptr<float>(),
+            descriptor.data_ptr<float>(), state.data_ptr<float>());
+  }
   DPA4C_CHECK_LAUNCH("dpa4c_graph_compress forward");
 }
 
@@ -1070,29 +1605,53 @@ void launch_backward(long node_count,
                      const torch::Tensor& state,
                      torch::Tensor& edge_gradient,
                      cudaStream_t stream) {
-  const int warps_per_block = kThreads / kWarpSize;
-  const int blocks =
-      static_cast<int>((node_count + warps_per_block - 1) / warps_per_block);
-  dpa4c_backward_kernel<Width, Canonical, index_t>
-      <<<blocks, kThreads, 0, stream>>>(
-          node_count, edge_count, interval_count, table_stride, table_max, rcut,
-          eps, degree_floor, descriptor_gradient.data_ptr<float>(),
-          edge_vec.data_ptr<float>(), edge_index.data_ptr<index_t>(),
-          edge_mask.numel() ? edge_mask.data_ptr<bool>() : nullptr,
-          destination_order.numel() ? destination_order.data_ptr<index_t>()
-                                    : nullptr,
-          destination_row_ptr.data_ptr<long>(), atype.data_ptr<long>(),
-          table.data_ptr<float>(), type_embedding.data_ptr<float>(),
-          feedback_weight.data_ptr<float>(), scalar_weight.data_ptr<float>(),
-          vector_weight.data_ptr<float>(), tensor_weight.data_ptr<float>(),
-          state.data_ptr<float>(), edge_gradient.data_ptr<float>());
+  if constexpr (Width <= kWarpSize) {
+    const int warps_per_block = kThreads / kWarpSize;
+    const int blocks =
+        static_cast<int>((node_count + warps_per_block - 1) / warps_per_block);
+    dpa4c_backward_kernel<Width, Canonical, index_t>
+        <<<blocks, kThreads, 0, stream>>>(
+            node_count, edge_count, interval_count, table_stride, table_max,
+            rcut, eps, degree_floor, descriptor_gradient.data_ptr<float>(),
+            edge_vec.data_ptr<float>(), edge_index.data_ptr<index_t>(),
+            edge_mask.numel() ? edge_mask.data_ptr<bool>() : nullptr,
+            destination_order.numel() ? destination_order.data_ptr<index_t>()
+                                      : nullptr,
+            destination_row_ptr.data_ptr<long>(), atype.data_ptr<long>(),
+            table.data_ptr<float>(), type_embedding.data_ptr<float>(),
+            feedback_weight.data_ptr<float>(), scalar_weight.data_ptr<float>(),
+            vector_weight.data_ptr<float>(), tensor_weight.data_ptr<float>(),
+            state.data_ptr<float>(), edge_gradient.data_ptr<float>());
+  } else {
+    const cudaError_t memset_error =
+        cudaMemsetAsync(edge_gradient.data_ptr<float>(), 0,
+                        edge_gradient.numel() * sizeof(float), stream);
+    TORCH_CHECK(memset_error == cudaSuccess,
+                "dpa4c_graph_compress backward initialization: ",
+                cudaGetErrorString(memset_error));
+    dpa4c_wide_backward_kernel<Width, Canonical, index_t>
+        <<<static_cast<int>(node_count), Width, 0, stream>>>(
+            node_count, edge_count, interval_count, table_stride, table_max,
+            rcut, eps, degree_floor, descriptor_gradient.data_ptr<float>(),
+            edge_vec.data_ptr<float>(), edge_index.data_ptr<index_t>(),
+            edge_mask.numel() ? edge_mask.data_ptr<bool>() : nullptr,
+            destination_order.numel() ? destination_order.data_ptr<index_t>()
+                                      : nullptr,
+            destination_row_ptr.data_ptr<long>(), atype.data_ptr<long>(),
+            table.data_ptr<float>(), type_embedding.data_ptr<float>(),
+            feedback_weight.data_ptr<float>(), scalar_weight.data_ptr<float>(),
+            vector_weight.data_ptr<float>(), tensor_weight.data_ptr<float>(),
+            state.data_ptr<float>(), edge_gradient.data_ptr<float>());
+  }
   DPA4C_CHECK_LAUNCH("dpa4c_graph_compress backward");
-  zero_padding_kernel<Canonical, index_t><<<1, kThreads, 0, stream>>>(
-      node_count, edge_count,
-      destination_order.numel() ? destination_order.data_ptr<index_t>()
-                                : nullptr,
-      destination_row_ptr.data_ptr<long>(), edge_gradient.data_ptr<float>());
-  DPA4C_CHECK_LAUNCH("dpa4c_graph_compress padding");
+  if constexpr (Width <= kWarpSize) {
+    zero_padding_kernel<Canonical, index_t><<<1, kThreads, 0, stream>>>(
+        node_count, edge_count,
+        destination_order.numel() ? destination_order.data_ptr<index_t>()
+                                  : nullptr,
+        destination_row_ptr.data_ptr<long>(), edge_gradient.data_ptr<float>());
+    DPA4C_CHECK_LAUNCH("dpa4c_graph_compress padding");
+  }
 }
 
 void validate_inputs(const torch::Tensor& edge_vec,
@@ -1191,6 +1750,8 @@ void dispatch_forward(int width,
   DISPATCH_WIDTH(8)
   DISPATCH_WIDTH(16)
   DISPATCH_WIDTH(32)
+  DISPATCH_WIDTH(64)
+  DISPATCH_WIDTH(128)
 #undef DISPATCH_WIDTH
   TORCH_CHECK(false, "dpa4c_graph_compress: unsupported channel width ", width);
 }
@@ -1245,6 +1806,8 @@ void dispatch_backward(int width,
   DISPATCH_WIDTH(8)
   DISPATCH_WIDTH(16)
   DISPATCH_WIDTH(32)
+  DISPATCH_WIDTH(64)
+  DISPATCH_WIDTH(128)
 #undef DISPATCH_WIDTH
   TORCH_CHECK(false,
               "dpa4c_graph_compress_backward: unsupported channel width ",
