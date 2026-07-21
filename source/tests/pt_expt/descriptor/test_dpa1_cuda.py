@@ -188,10 +188,23 @@ class TestDpa1GraphCudaDescriptor(unittest.TestCase):
         self._assert_parity(_build_dpa1_expt(self.device, [32, 64, 128]))
 
     def test_parity_lmax_two(self) -> None:
-        self._assert_parity(_build_dpa1_expt(self.device, [16, 32, 64], lmax=2))
+        descriptor = _build_dpa1_expt(self.device, [16, 32, 64], lmax=2)
+        assert descriptor.se_atten.adam_degree_gain_raw is not None
+        descriptor.se_atten.adam_degree_gain_raw.data.fill_(0.7)
+        self._assert_parity(descriptor)
 
     def test_parity_lmax_two_wide(self) -> None:
         self._assert_parity(_build_dpa1_expt(self.device, [32, 64, 128], lmax=2))
+
+    def test_lmax_four_declines_uncompressed_cuda(self) -> None:
+        descriptor = _build_dpa1_expt(
+            self.device,
+            [16, 16, 16],
+            act="silu",
+            tebd_input_mode="strip",
+            lmax=4,
+        )
+        self.assertFalse(descriptor._fused_eligible("cuda"))
 
     def test_parity_one_side_silu_resnet_dt(self) -> None:
         self._assert_parity(
@@ -511,7 +524,27 @@ class TestDpa1GraphCudaCompress(unittest.TestCase):
         self._assert_parity(_build_compressed_dpa1(self.device, [16, 32, 64]))
 
     def test_parity_lmax_two(self) -> None:
-        self._assert_parity(_build_compressed_dpa1(self.device, [16, 32, 64], lmax=2))
+        descriptor = _build_compressed_dpa1(self.device, [16, 32, 64], lmax=2)
+        assert descriptor.se_atten.adam_degree_gain_raw is not None
+        descriptor.se_atten.adam_degree_gain_raw.data.fill_(0.7)
+        self._assert_parity(descriptor)
+
+    def test_parity_high_degrees(self) -> None:
+        for lmax in (3, 4):
+            with self.subTest(lmax=lmax):
+                descriptor = _build_compressed_dpa1(
+                    self.device,
+                    [16, 32, 64],
+                    lmax=lmax,
+                )
+                assert descriptor.se_atten.adam_degree_gain_raw is not None
+                descriptor.se_atten.adam_degree_gain_raw.data.copy_(
+                    torch.tensor(
+                        [0.7, -0.5, 0.9][: lmax - 1],
+                        device=self.device,
+                    )
+                )
+                self._assert_parity(descriptor)
 
     def test_parity_wide_two_side(self) -> None:
         # NG = 128: the moment backward covers the table in two channel blocks.
@@ -564,7 +597,7 @@ class TestDpa1GraphCudaCompress(unittest.TestCase):
             dpa1_graph_compress,
         )
 
-        des = _build_compressed_dpa1(self.device, [16, 32, 64])
+        des = _build_compressed_dpa1(self.device, [16, 32, 64], lmax=4)
         graph64, atype, _ = self._graph_and_dense(des)
         graph32 = dataclasses.replace(
             graph64,
@@ -606,7 +639,11 @@ class TestDpa1GraphCudaCompress(unittest.TestCase):
             canonical_graph_from_neighbor_graph,
         )
 
-        des = _build_compressed_dpa1(self.device, [16, 32, 64])
+        des = _build_compressed_dpa1(
+            self.device,
+            [16, 32, 64],
+            lmax=4,
+        )
         graph, atype, _ = self._graph_and_dense(des)
         graph = canonicalize_neighbor_graph(
             dataclasses.replace(graph, n_local=graph.n_node),
@@ -616,6 +653,8 @@ class TestDpa1GraphCudaCompress(unittest.TestCase):
         type_embedding = des.type_embedding.call()
         se = des.se_atten
         inverse_stddev = torch.reciprocal(se.stddev[:, 0, :]).contiguous()
+        assert se.adam_degree_gain_raw is not None
+        degree_gain = se.adam_degree_gain_raw.to(torch.float32).contiguous()
         lower, upper, table_max, stride0, stride1 = (
             float(value) for value in des.compress_info[0].tolist()[:5]
         )
@@ -635,6 +674,7 @@ class TestDpa1GraphCudaCompress(unittest.TestCase):
             type_embedding,
             se.mean[:, 0, :].contiguous(),
             inverse_stddev,
+            degree_gain,
             des.compress_data[0].contiguous(),
             des.type_embd_data.contiguous(),
             int(se.type_one_side),
@@ -684,6 +724,7 @@ class TestDpa1GraphCudaCompress(unittest.TestCase):
             atype,
             se.mean[:, 0, :].contiguous(),
             inverse_stddev,
+            degree_gain,
             des.compress_data[0].contiguous(),
             des.type_embd_data.contiguous(),
             int(se.type_one_side),
@@ -1180,6 +1221,8 @@ class TestDpa1GraphEnergyForce(unittest.TestCase):
             act="silu",
             lmax=2,
         )
+        assert des.se_atten.adam_degree_gain_raw is not None
+        des.se_atten.adam_degree_gain_raw.data.fill_(0.7)
         fit = self._build_fitting(des.get_dim_out())
         graph, atype = self._graph(des)
         tebd = des.type_embedding.call()
@@ -1231,6 +1274,30 @@ class TestDpa1GraphEnergyForce(unittest.TestCase):
         torch.testing.assert_close(force, r_force, atol=1e-4, rtol=1e-4)
         torch.testing.assert_close(virial, r_virial, atol=1e-4, rtol=1e-4)
         torch.testing.assert_close(atom_vir, r_atom_vir, atol=1e-4, rtol=1e-4)
+
+    def test_level_two_graph_export(self) -> None:
+        """The fused energy-force CPU implementation preserves its operator ABI."""
+        from deepmd.pt_expt.model import (
+            EnergyModel,
+        )
+        from deepmd.pt_expt.utils.serialization import (
+            _trace_and_export,
+        )
+
+        cpu = torch.device("cpu")
+        des = _build_dpa1_expt(cpu, [8, 16, 32], act="silu", lmax=2)
+        original_device = self.device
+        self.device = cpu
+        fit = self._build_fitting(des.get_dim_out())
+        self.device = original_device
+        model = EnergyModel(des, fit, type_map=["A", "B"]).eval()
+        with _CudaLevel("2"):
+            exported, _metadata, _model_json, _output_keys = _trace_and_export(
+                {"model": model.serialize()},
+                do_atomic_virial=True,
+                lower_kind="graph",
+            )
+        self.assertIsInstance(exported, torch.export.ExportedProgram)
 
     def test_missing_csr_declines_energy_force_fusion(self) -> None:
         """The caller can fall back when optional CSR views are absent."""
@@ -1457,7 +1524,11 @@ class TestDpa1GraphCompressEnergyForce(unittest.TestCase):
             act="silu",
             ntypes=4,
             axis_neuron=16,
-            lmax=2,
+            lmax=4,
+        )
+        assert des.se_atten.adam_degree_gain_raw is not None
+        des.se_atten.adam_degree_gain_raw.data.copy_(
+            torch.tensor([0.7, -0.5, 0.9], device=self.device)
         )
         self.assertTrue(mega_eligible(des))
         fit = self._build_fitting(des.get_dim_out(), ntypes=4)

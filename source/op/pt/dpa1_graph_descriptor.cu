@@ -469,7 +469,8 @@ __global__ __launch_bounds__(kThreads, 2) void dpa1_graph_forward_kernel(
 // ======================================================================
 template <int N1, int N2, int NG, int TILE, int BASIS_DIM>
 struct BwdSmem {
-  static constexpr int kResidentRuns = 4;
+  static constexpr int kResidentRuns =
+      BASIS_DIM <= 9 ? 4 : (BASIS_DIM == 16 ? 2 : 1);
   static constexpr int STRIDE = TILE + 4;
   float h2[N2][STRIDE];   // act(pre2) tile; raw dh2 after stage 3
   float x_t[N2][STRIDE];  // dpre3 block tile; dpre2 rows [0, N2)
@@ -1194,7 +1195,7 @@ void launch_backward_portable(const LaunchArgs& a,
     launch_backward<N1, N2, NG, ACT, STRIP, kEdgesPerThread, kPrefetch,
                     BASIS_DIM>(a, dgr, pre2_saved, g_saved, d_edge_vec);
   } else {
-    constexpr int kPreferredEdgesPerThread = 4;
+    constexpr int kPreferredEdgesPerThread = BASIS_DIM == 25 ? 2 : 4;
     constexpr int kPreferredTile = 16 * kPreferredEdgesPerThread;
     constexpr size_t kPreferredSharedMemory =
         sizeof(BwdSmem<N1, N2, NG, kPreferredTile, BASIS_DIM>);
@@ -1287,6 +1288,7 @@ dpa1_graph_descriptor(torch::Tensor edge_vec,
                       torch::Tensor type_embedding,
                       torch::Tensor davg,
                       torch::Tensor dstd,
+                      torch::Tensor degree_gain,
                       torch::Tensor w1,
                       torch::Tensor b1,
                       torch::Tensor idt1,
@@ -1336,6 +1338,14 @@ dpa1_graph_descriptor(torch::Tensor edge_vec,
               "dpa1_graph_descriptor: act must be 0 (tanh) or 1 (silu)");
   TORCH_CHECK(basis_dim == 4 || basis_dim == 9,
               "dpa1_graph_descriptor: basis_dim must be 4 or 9");
+  const int degree_gain_size = basis_dim == 4 ? 0 : 1;
+  TORCH_CHECK(
+      degree_gain.is_contiguous() &&
+          degree_gain.scalar_type() == torch::kFloat32 &&
+          degree_gain.numel() == degree_gain_size,
+      "dpa1_graph_descriptor: degree_gain has an invalid shape or dtype");
+  const float* degree_gain_ptr =
+      degree_gain.numel() ? degree_gain.data_ptr<float>() : nullptr;
   auto stream = at::cuda::getCurrentCUDAStream();
 
   auto [order, pair_table] = build_order_and_pair_table(
@@ -1410,14 +1420,16 @@ dpa1_graph_descriptor(torch::Tensor edge_vec,
     if (basis_dim == 4) {
       gram_kernel<4><<<(int)n_node, 128, smem, stream>>>(
           (int)n_node, NG, (int)axis, tebd_dim, (int)concat_tebd,
-          gr.data_ptr<float>(), type_embedding.data_ptr<float>(),
-          atype.data_ptr<long>(), grrg.data_ptr<float>(),
+          gr.data_ptr<float>(), degree_gain_ptr,
+          type_embedding.data_ptr<float>(), atype.data_ptr<long>(),
+          grrg.data_ptr<float>(),
           write_rotation ? rot_mat.data_ptr<float>() : nullptr);
     } else {
       gram_kernel<9><<<(int)n_node, 128, smem, stream>>>(
           (int)n_node, NG, (int)axis, tebd_dim, (int)concat_tebd,
-          gr.data_ptr<float>(), type_embedding.data_ptr<float>(),
-          atype.data_ptr<long>(), grrg.data_ptr<float>(),
+          gr.data_ptr<float>(), degree_gain_ptr,
+          type_embedding.data_ptr<float>(), atype.data_ptr<long>(),
+          grrg.data_ptr<float>(),
           write_rotation ? rot_mat.data_ptr<float>() : nullptr);
     }
     DPA1_CHECK_LAUNCH("dpa1_graph_descriptor gram");
@@ -1442,6 +1454,7 @@ torch::Tensor dpa1_graph_descriptor_backward(
     torch::Tensor atype,
     torch::Tensor davg,
     torch::Tensor dstd,
+    torch::Tensor degree_gain,
     torch::Tensor w1,
     torch::Tensor b1,
     torch::Tensor idt1,
@@ -1470,6 +1483,8 @@ torch::Tensor dpa1_graph_descriptor_backward(
   const bool strip = gate_table.numel() > 0;
   TORCH_CHECK(basis_dim == 4 || basis_dim == 9,
               "dpa1_graph_descriptor_backward: basis dimension must be 4 or 9");
+  const float* degree_gain_ptr =
+      degree_gain.numel() ? degree_gain.data_ptr<float>() : nullptr;
   auto stream = at::cuda::getCurrentCUDAStream();
   auto f32 =
       torch::TensorOptions().dtype(torch::kFloat32).device(edge_vec.device());
@@ -1488,12 +1503,12 @@ torch::Tensor dpa1_graph_descriptor_backward(
       gram_backward_kernel<4><<<(int)n_node, 128, smem, stream>>>(
           (int)n_node, NG, (int)axis, (int)d_grrg_c.size(1),
           d_grrg_c.data_ptr<float>(), d_rot_ptr, gr.data_ptr<float>(),
-          dgr.data_ptr<float>());
+          degree_gain_ptr, dgr.data_ptr<float>());
     } else {
       gram_backward_kernel<9><<<(int)n_node, 128, smem, stream>>>(
           (int)n_node, NG, (int)axis, (int)d_grrg_c.size(1),
           d_grrg_c.data_ptr<float>(), d_rot_ptr, gr.data_ptr<float>(),
-          dgr.data_ptr<float>());
+          degree_gain_ptr, dgr.data_ptr<float>());
     }
     DPA1_CHECK_LAUNCH("dpa1_graph_descriptor gram backward");
   }
@@ -1558,11 +1573,15 @@ torch::Tensor dpa1_graph_descriptor_backward(
   return d_edge_vec.to(edge_vec.scalar_type());
 }
 
+#undef DPA1_DISPATCH_WIDTH_ACT
+#undef DPA1_DISPATCH_ONE
+
 TORCH_LIBRARY_FRAGMENT(deepmd, m) {
   m.def(
       "dpa1_graph_descriptor(Tensor edge_vec, Tensor edge_index, "
       "Tensor edge_mask, Tensor atype, Tensor type_embedding, Tensor davg, "
-      "Tensor dstd, Tensor w1, Tensor b1, Tensor idt1, Tensor w2, Tensor b2, "
+      "Tensor dstd, Tensor degree_gain, Tensor w1, Tensor b1, Tensor idt1, "
+      "Tensor w2, Tensor b2, "
       "Tensor idt2, Tensor w3, Tensor b3, Tensor idt3, Tensor gate_table, "
       "int act, int type_one_side, int concat_tebd, int write_rotation, int "
       "smooth, int axis, int resnet2, int resnet3, float rcut, float "
@@ -1576,7 +1595,8 @@ TORCH_LIBRARY_FRAGMENT(deepmd, m) {
       "dpa1_graph_descriptor_backward(Tensor d_grrg, Tensor? d_rot_mat, "
       "Tensor gr, Tensor edge_order, Tensor pair_table, Tensor pre2_saved, "
       "Tensor g_saved, Tensor edge_vec, Tensor edge_index, Tensor edge_mask, "
-      "Tensor atype, Tensor davg, Tensor dstd, Tensor w1, Tensor b1, "
+      "Tensor atype, Tensor davg, Tensor dstd, Tensor degree_gain, Tensor w1, "
+      "Tensor b1, "
       "Tensor idt1, Tensor w2, Tensor b2, Tensor idt2, Tensor w3, Tensor b3, "
       "Tensor idt3, Tensor gate_table, int act, int type_one_side, "
       "int smooth, int axis, int resnet2, int resnet3, float rcut, "

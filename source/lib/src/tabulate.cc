@@ -168,7 +168,7 @@ void deepmd::tabulate_fusion_se_a_cpu(FPTYPE* out,
                                       const int last_layer_size,
                                       const bool is_sorted,
                                       const int ndescrpt) {
-  assert(ndescrpt == 4 || ndescrpt == 9);
+  assert(ndescrpt == 4 || ndescrpt == 9 || ndescrpt == 16 || ndescrpt == 25);
   bool enable_se_atten = two_embed != nullptr;
   memset(out, 0, sizeof(FPTYPE) * nloc * ndescrpt * last_layer_size);
   const FPTYPE lower = table_info[0];
@@ -180,7 +180,7 @@ void deepmd::tabulate_fusion_se_a_cpu(FPTYPE* out,
 // FPTYPE * res = new FPTYPE[ndescrpt * last_layer_size];
 #pragma omp parallel for
   for (int ii = 0; ii < nloc; ii++) {
-    FPTYPE ll[9] = {0};
+    FPTYPE ll[25] = {0};
     FPTYPE ago = em_x[ii * nnei + nnei - 1];
     bool unloop = false;
     for (int jj = 0; jj < nnei; jj++) {
@@ -239,7 +239,7 @@ void deepmd::tabulate_fusion_se_a_grad_cpu(FPTYPE* dy_dem_x,
                                            const int last_layer_size,
                                            const bool is_sorted,
                                            const int ndescrpt) {
-  assert(ndescrpt == 4 || ndescrpt == 9);
+  assert(ndescrpt == 4 || ndescrpt == 9 || ndescrpt == 16 || ndescrpt == 25);
   bool enable_se_atten = two_embed != nullptr;
   memset(dy_dem_x, 0, sizeof(FPTYPE) * nloc * nnei);
   memset(dy_dem, 0, sizeof(FPTYPE) * nloc * nnei * ndescrpt);
@@ -255,8 +255,8 @@ void deepmd::tabulate_fusion_se_a_grad_cpu(FPTYPE* dy_dem_x,
 // FPTYPE * res = new FPTYPE[ndescrpt * last_layer_size];
 #pragma omp parallel for
   for (int ii = 0; ii < nloc; ii++) {
-    FPTYPE ll[9] = {0};
-    FPTYPE rr[9] = {0};
+    FPTYPE ll[25] = {0};
+    FPTYPE rr[25] = {0};
     FPTYPE ago = em_x[ii * nnei + nnei - 1];
     bool unloop = false;
     for (int jj = 0; jj < nnei; jj++) {
@@ -343,7 +343,7 @@ void deepmd::tabulate_fusion_se_a_grad_grad_cpu(FPTYPE* dz_dy,
                                                 const int last_layer_size,
                                                 const bool is_sorted,
                                                 const int ndescrpt) {
-  assert(ndescrpt == 4 || ndescrpt == 9);
+  assert(ndescrpt == 4 || ndescrpt == 9 || ndescrpt == 16 || ndescrpt == 25);
   bool enable_se_atten = two_embed != nullptr;
   memset(dz_dy, 0, sizeof(FPTYPE) * nloc * ndescrpt * last_layer_size);
   const FPTYPE lower = table_info[0];
@@ -355,8 +355,8 @@ void deepmd::tabulate_fusion_se_a_grad_grad_cpu(FPTYPE* dz_dy,
 // FPTYPE * res = new FPTYPE[ndescrpt * last_layer_size];
 #pragma omp parallel for
   for (int ii = 0; ii < nloc; ii++) {
-    FPTYPE ll[9] = {0};
-    FPTYPE hh[9] = {0};
+    FPTYPE ll[25] = {0};
+    FPTYPE hh[25] = {0};
     FPTYPE ago = em_x[ii * nnei + nnei - 1];
     bool unloop = false;
     for (int jj = 0; jj < nnei; jj++) {

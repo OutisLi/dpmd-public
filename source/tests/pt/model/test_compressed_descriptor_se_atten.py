@@ -77,7 +77,7 @@ def eval_pt_descriptor_with_gradient(
     return result, first_derivative
 
 
-@parameterized(("float32", "float64"), (True, False), (1, 2))
+@parameterized(("float32", "float64"), (True, False), (1, 2, 3, 4))
 class TestDescriptorSeAtten(unittest.TestCase):
     def setUp(self) -> None:
         (self.dtype, self.type_one_side, self.lmax) = self.param
@@ -166,7 +166,7 @@ class TestDescriptorSeAtten(unittest.TestCase):
         )
 
     def test_compressed_coordinate_gradient(self) -> None:
-        if self.lmax != 2:
+        if self.lmax == 1:
             self.skipTest("The lmax=1 derivative path is covered by operator tests.")
 
         dense = eval_pt_descriptor_with_gradient(

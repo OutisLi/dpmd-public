@@ -91,7 +91,7 @@ class DescrptSeAttenV2(DescrptDPA1):
             Number of the axis neuron :math:`M_2` (number of columns of the sub-matrix of the embedding matrix)
         lmax : int
             Maximum angular degree of the aggregated moment basis. Supported
-            values are 1 and 2.
+            values are 1 through 4.
         tebd_dim : int
             Dimension of the type embedding
         set_davg_zero : bool
@@ -242,6 +242,10 @@ class DescrptSeAttenV2(DescrptDPA1):
             "trainable": self.trainable,
             "spin": None,
         }
+        if obj.adam_degree_gain_raw is not None:
+            data["@variables"]["degree_gain_raw"] = (
+                obj.adam_degree_gain_raw.detach().cpu().numpy()
+            )
         if obj.lmax != 1:
             data["lmax"] = obj.lmax
         return data
@@ -272,6 +276,10 @@ class DescrptSeAttenV2(DescrptDPA1):
         )
         obj.se_atten["davg"] = t_cvt(variables["davg"])
         obj.se_atten["dstd"] = t_cvt(variables["dstd"])
+        if obj.se_atten.adam_degree_gain_raw is not None:
+            obj.se_atten.adam_degree_gain_raw.data.copy_(
+                t_cvt(variables["degree_gain_raw"])
+            )
         obj.se_atten.filter_layers = NetworkCollection.deserialize(embeddings)
         obj.se_atten.filter_layers_strip = NetworkCollection.deserialize(
             embeddings_strip

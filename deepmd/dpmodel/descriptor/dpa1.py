@@ -84,6 +84,8 @@ from .descriptor import (
     extend_descrpt_stat,
 )
 
+_DEGREE_GAIN_INIT_STD = 0.1
+
 
 def np_softmax(x: Array, axis: int = -1) -> Array:
     xp = array_api_compat.array_namespace(x)
@@ -122,7 +124,7 @@ def build_dpa1_moment_basis(
     valid_mask
         Valid non-excluded neighbor mask with shape ``(...)``.
     lmax
-        Maximum angular degree. Supported values are 1 and 2.
+        Maximum angular degree. Supported values are 1 through 4.
     protection
         Distance protection added to the radial denominator.
 
@@ -150,18 +152,67 @@ def build_dpa1_moment_basis(
     radial = switch / denominator / radial_stddev * xp.astype(basis_mask, switch.dtype)
 
     x, y, z = direction[..., 0], direction[..., 1], direction[..., 2]
+    q = x * x + y * y + z * z
     sqrt_three = math.sqrt(3.0)
     degree_two = xp.stack(
         [
             sqrt_three * x * y,
             sqrt_three * y * z,
-            0.5 * (3.0 * z * z - 1.0),
+            0.5 * (3.0 * z * z - q),
             sqrt_three * x * z,
             0.5 * sqrt_three * (x * x - y * y),
         ],
         axis=-1,
     )
-    return xp.concat([rr, radial * degree_two], axis=-1)
+    blocks = [rr, radial * degree_two]
+    if lmax >= 3:
+        degree_three = xp.stack(
+            [
+                math.sqrt(5.0 / 8.0) * y * (3.0 * x * x - y * y),
+                math.sqrt(15.0) * x * y * z,
+                math.sqrt(3.0 / 8.0) * y * (5.0 * z * z - q),
+                0.5 * z * (5.0 * z * z - 3.0 * q),
+                math.sqrt(3.0 / 8.0) * x * (5.0 * z * z - q),
+                0.5 * math.sqrt(15.0) * z * (x * x - y * y),
+                math.sqrt(5.0 / 8.0) * x * (x * x - 3.0 * y * y),
+            ],
+            axis=-1,
+        )
+        blocks.append(radial * degree_three)
+    if lmax >= 4:
+        z2 = z * z
+        x2_minus_y2 = x * x - y * y
+        degree_four = xp.stack(
+            [
+                0.5 * math.sqrt(35.0) * x * y * x2_minus_y2,
+                0.25 * math.sqrt(70.0) * y * z * (3.0 * x * x - y * y),
+                0.5 * math.sqrt(5.0) * x * y * (7.0 * z2 - q),
+                0.25 * math.sqrt(10.0) * y * z * (7.0 * z2 - 3.0 * q),
+                0.125 * (35.0 * z2 * z2 - 30.0 * z2 * q + 3.0 * q * q),
+                0.25 * math.sqrt(10.0) * x * z * (7.0 * z2 - 3.0 * q),
+                0.25 * math.sqrt(5.0) * x2_minus_y2 * (7.0 * z2 - q),
+                0.25 * math.sqrt(70.0) * x * z * (x * x - 3.0 * y * y),
+                0.125 * math.sqrt(35.0) * (x**4 - 6.0 * x * x * y * y + y**4),
+            ],
+            axis=-1,
+        )
+        blocks.append(radial * degree_four)
+    return xp.concat(blocks, axis=-1)
+
+
+def build_dpa1_degree_weights(
+    raw_gain: Array,
+    lmax: int,
+    reference: Array,
+) -> Array:
+    """Expand non-negative per-degree Gram weights to packed moment rows."""
+    xp = array_api_compat.array_namespace(raw_gain, reference)
+    device = array_api_compat.device(reference)
+    blocks = [xp.ones((4,), dtype=reference.dtype, device=device)]
+    for degree in range(2, lmax + 1):
+        weight = raw_gain[degree - 2] * raw_gain[degree - 2]
+        blocks.append(xp.broadcast_to(weight, (2 * degree + 1,)))
+    return xp.concat(blocks)
 
 
 @BaseDescriptor.register("se_atten")
@@ -301,7 +352,7 @@ class DescrptDPA1(NativeOP, BaseDescriptor):
             A list of strings. Give the name to each type of atoms.
     lmax: int
             Maximum angular degree of the Cartesian moment basis. Supported
-            values are 1 and 2.
+            values are 1 through 4.
     spin
             (Only support None to keep consistent with other backend references.)
             (Not used in this version. Not-none option is not implemented.)
@@ -1086,6 +1137,9 @@ class DescrptDPA1(NativeOP, BaseDescriptor):
         }
         if obj.lmax != 1:
             data["lmax"] = obj.lmax
+            data["@variables"]["degree_gain_raw"] = to_numpy_array(
+                obj.adam_degree_gain_raw
+            )
         if obj.tebd_input_mode in ["strip"]:
             data.update({"embeddings_strip": obj.embeddings_strip.serialize()})
         if self.compress:
@@ -1145,6 +1199,11 @@ class DescrptDPA1(NativeOP, BaseDescriptor):
 
         obj.se_atten["davg"] = variables["davg"]
         obj.se_atten["dstd"] = variables["dstd"]
+        if obj.se_atten.lmax > 1:
+            obj.se_atten.adam_degree_gain_raw = np.asarray(
+                variables["degree_gain_raw"],
+                dtype=PRECISION_DICT[obj.se_atten.precision],
+            )
         obj.se_atten.embeddings = NetworkCollection.deserialize(embeddings)
         if tebd_input_mode in ["strip"]:
             obj.se_atten.embeddings_strip = NetworkCollection.deserialize(
@@ -1287,7 +1346,7 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         If the parameters are trainable.
     lmax : int, optional
         Maximum angular degree of the Cartesian moment basis. Supported values
-        are 1 and 2.
+        are 1 through 4.
     """
 
     def __init__(
@@ -1332,8 +1391,8 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         self.neuron = neuron
         self.filter_neuron = self.neuron
         self.axis_neuron = axis_neuron
-        if lmax not in (1, 2):
-            raise ValueError(f"`lmax` must be 1 or 2, got {lmax}")
+        if lmax not in (1, 2, 3, 4):
+            raise ValueError(f"`lmax` must be between 1 and 4, got {lmax}")
         self.lmax = int(lmax)
         self.tebd_dim = tebd_dim
         self.tebd_input_mode = tebd_input_mode
@@ -1354,6 +1413,16 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         self.normalize = normalize
         self.temperature = temperature
         self.smooth = smooth
+        self.trainable = bool(trainable)
+        if self.lmax > 1:
+            gain_rng = np.random.default_rng(child_seed(seed, 3))
+            self.adam_degree_gain_raw = gain_rng.normal(
+                loc=0.0,
+                scale=_DEGREE_GAIN_INIT_STD,
+                size=(self.lmax - 1,),
+            ).astype(PRECISION_DICT[self.precision])
+        else:
+            self.adam_degree_gain_raw = None
         # order matters, placed after the assignment of self.ntypes
         self.reinit_exclude(exclude_types)
 
@@ -1717,7 +1786,7 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         # nfnl x nnei x 1
         ss = rr[..., 0:1]
         moment_basis = rr
-        if self.lmax == 2:
+        if self.lmax > 1:
             diff_flat = xp.reshape(diff, (nf * nloc, nnei, 3))
             radial_stddev = xp.take(
                 self.stddev,
@@ -1857,6 +1926,13 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
             g2 = None
         gr /= self.nnei
         gr1 = gr[:, : self.axis_neuron, :]
+        if self.lmax > 1:
+            degree_weights = build_dpa1_degree_weights(
+                self.adam_degree_gain_raw,
+                self.lmax,
+                gr,
+            )
+            gr1 = gr1 * degree_weights[None, None, :]
         # nfnl x ng x ng1
         # grrg = xp.einsum("lid,ljd->lij", gr, gr1)
         grrg = xp.sum(gr[:, :, None, :] * gr1[:, None, :, :], axis=3)
@@ -1964,7 +2040,7 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         # radial channel
         ss = rr[:, 0:1]  # (E, 1)
         moment_basis = rr
-        if self.lmax == 2:
+        if self.lmax > 1:
             radial_stddev = xp.take(self.stddev[:, 0, 0:1], center_type, axis=0)
             moment_basis = build_dpa1_moment_basis(
                 rr,
@@ -2008,6 +2084,13 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         # neighbor-axis reduction -> segment_sum over centers; divide by nnei
         gr = segment_sum(outer, dst, n_total) / self.nnei
         gr1 = gr[:, : self.axis_neuron, :]
+        if self.lmax > 1:
+            degree_weights = build_dpa1_degree_weights(
+                self.adam_degree_gain_raw,
+                self.lmax,
+                gr,
+            )
+            gr1 = gr1 * degree_weights[None, None, :]
         # nf x nloc x (ng x ng1)
         grrg = xp.sum(gr[:, :, None, :] * gr1[:, None, :, :], axis=3)  # (N, ng, ng1)
         ng = self.neuron[-1]
@@ -2261,6 +2344,7 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
             "trainable_ln": obj.trainable_ln,
             "ln_eps": obj.ln_eps,
             "smooth": obj.smooth,
+            "trainable": obj.trainable,
             "type_one_side": obj.type_one_side,
             # make deterministic
             "precision": np.dtype(PRECISION_DICT[obj.precision]).name,
@@ -2276,6 +2360,9 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
         }
         if obj.lmax != 1:
             data["lmax"] = obj.lmax
+            data["@variables"]["degree_gain_raw"] = to_numpy_array(
+                obj.adam_degree_gain_raw
+            )
         if obj.tebd_input_mode in ["strip"]:
             data.update({"embeddings_strip": obj.embeddings_strip.serialize()})
         return data
@@ -2300,6 +2387,11 @@ class DescrptBlockSeAtten(NativeOP, DescriptorBlock):
 
         obj["davg"] = variables["davg"]
         obj["dstd"] = variables["dstd"]
+        if obj.lmax > 1:
+            obj.adam_degree_gain_raw = np.asarray(
+                variables["degree_gain_raw"],
+                dtype=PRECISION_DICT[obj.precision],
+            )
         obj.embeddings = NetworkCollection.deserialize(embeddings)
         if tebd_input_mode in ["strip"]:
             obj.embeddings_strip = NetworkCollection.deserialize(embeddings_strip)

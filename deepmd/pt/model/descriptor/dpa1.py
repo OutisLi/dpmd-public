@@ -77,10 +77,10 @@ class DescrptDPA1(BaseDescriptor, torch.nn.Module):
     :math:`\mathcal{G}^i`
     after additional self-attention mechanism. For :math:`L=1`,
     :math:`\mathcal{B}_{L}^i` is the full environment matrix
-    :math:`\mathcal{R}^i` of the se_e2_a descriptor. For :math:`L=2`, five
-    real symmetric-traceless components are appended to each environment row.
-    Their inner product is :math:`P_2(\cos\theta)`, adding quadrupolar angular
-    correlations without enumerating neighbor pairs.
+    :math:`\mathcal{R}^i` of the se_e2_a descriptor. For :math:`L=2,3,4`,
+    norm-normalized real spherical harmonics are appended to each environment
+    row. Their per-degree inner products are :math:`P_l(\cos\theta)`, adding
+    higher angular correlations without enumerating neighbor pairs.
     Note that we obtain :math:`\mathcal{G}^i` using the type embedding method by default in this descriptor.
 
     To perform the self-attention mechanism, the queries :math:`\mathcal{Q}^{i,l} \in \mathbb{R}^{N_c\times d_k}`,
@@ -143,7 +143,7 @@ class DescrptDPA1(BaseDescriptor, torch.nn.Module):
             Number of the axis neuron :math:`M_2` (number of columns of the sub-matrix of the embedding matrix)
     lmax: int
             Maximum angular degree of the aggregated moment basis. Supported
-            values are 1 and 2.
+            values are 1 through 4.
     tebd_dim: int
             Dimension of the type embedding
     tebd_input_mode: str
@@ -556,6 +556,10 @@ class DescrptDPA1(BaseDescriptor, torch.nn.Module):
             "trainable": self.trainable,
             "spin": None,
         }
+        if obj.adam_degree_gain_raw is not None:
+            data["@variables"]["degree_gain_raw"] = (
+                obj.adam_degree_gain_raw.detach().cpu().numpy()
+            )
         if obj.lmax != 1:
             data["lmax"] = obj.lmax
         if obj.tebd_input_mode in ["strip"]:
@@ -592,6 +596,10 @@ class DescrptDPA1(BaseDescriptor, torch.nn.Module):
         )
         obj.se_atten["davg"] = t_cvt(variables["davg"])
         obj.se_atten["dstd"] = t_cvt(variables["dstd"])
+        if obj.se_atten.adam_degree_gain_raw is not None:
+            obj.se_atten.adam_degree_gain_raw.data.copy_(
+                t_cvt(variables["degree_gain_raw"])
+            )
         obj.se_atten.filter_layers = NetworkCollection.deserialize(embeddings)
         if tebd_input_mode in ["strip"]:
             obj.se_atten.filter_layers_strip = NetworkCollection.deserialize(

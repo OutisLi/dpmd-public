@@ -11,6 +11,7 @@ from deepmd.dpmodel.common import (
 )
 from deepmd.dpmodel.descriptor.dpa1 import DescrptDPA1 as DescrptDPA1DP
 from deepmd.dpmodel.descriptor.dpa1 import (
+    build_dpa1_degree_weights,
     build_dpa1_moment_basis,
 )
 from deepmd.dpmodel.utils.env_mat_stat import (
@@ -146,7 +147,7 @@ def _env_mat(
     rr = rr.view(nfnl, nnei, 4) * exclude_mask[:, :, None].to(rr.dtype)
     ss = rr[:, :, :1]
     moment_basis = rr
-    if se.lmax == 2:
+    if se.lmax > 1:
         diff = diff.view(nfnl, nnei, 3)
         radial_stddev = se.stddev[:, :, :1][atype_ext[:, :nloc]].view(nfnl, nnei, 1)
         moment_basis = build_dpa1_moment_basis(
@@ -259,6 +260,13 @@ def _grrg_from_moment(
     xyz_scatter_1 = xyz_scatter.permute(0, 2, 1)
     rot_mat = xyz_scatter_1[:, :, 1:4]
     xyz_scatter_2 = xyz_scatter[:, :, 0 : se.axis_neuron]
+    if se.lmax > 1:
+        degree_weights = build_dpa1_degree_weights(
+            se.adam_degree_gain_raw,
+            se.lmax,
+            xyz_scatter,
+        )
+        xyz_scatter_2 = xyz_scatter_2 * degree_weights.view(1, -1, 1)
     result = torch.matmul(xyz_scatter_1, xyz_scatter_2)
     result = result.view(nf, nloc, ng * se.axis_neuron)
     rot_mat = rot_mat.view(nf, nloc, ng, 3)
@@ -301,6 +309,7 @@ class DescrptDPA1(DescrptDPA1DP):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        self._promote_degree_gain()
         # Persisted graph-routing knob (first-class training configuration):
         # ``disable_graph_lower()`` used to flip only the plain dpmodel bool,
         # which a Trainer checkpoint restart silently reset (the fresh model
@@ -314,6 +323,24 @@ class DescrptDPA1(DescrptDPA1DP):
             "graph_lower_disabled",
             torch.zeros((), dtype=torch.bool, device="cpu"),
         )
+
+    def _promote_degree_gain(self) -> None:
+        """Promote the dpmodel raw degree gains from a buffer to a Parameter."""
+        block = self.se_atten
+        raw = block._buffers.get("adam_degree_gain_raw")
+        if raw is None:
+            return
+        del block._buffers["adam_degree_gain_raw"]
+        block.adam_degree_gain_raw = torch.nn.Parameter(
+            raw,
+            requires_grad=bool(block.trainable),
+        )
+
+    @classmethod
+    def deserialize(cls, data: dict) -> "DescrptDPA1":
+        obj = super().deserialize(data)
+        obj._promote_degree_gain()
+        return obj
 
     def disable_graph_lower(self) -> None:
         """Persisted variant of the dpmodel escape hatch (see base class).
@@ -626,6 +653,11 @@ class DescrptDPA1(DescrptDPA1DP):
             precomputed outside the kernel). ``triton`` serves any layer
             stack (the head layers run on cuBLAS), so only the last
             activation must be inlined.
+
+            The uncompressed CUDA mega kernel serves ``lmax`` 1 and 2. Higher
+            degrees are CUDA-fused only after geometric compression, matching
+            the intended student-model deployment path; uncompressed
+            ``lmax`` 3 and 4 use the portable reference implementation.
         """
         se = self.se_atten
         if se.attn_layer != 0:
@@ -642,10 +674,16 @@ class DescrptDPA1(DescrptDPA1DP):
                     and se.mean.dtype == torch.float32
                     and self.compress_data[0].dtype == torch.float32
                     and self.type_embd_data.dtype == torch.float32
-                    and int(se.neuron[-1]) <= 256
+                    and (
+                        int(se.neuron[-1]) <= 256
+                        if se.lmax <= 2
+                        else 8 < int(se.neuron[-1]) <= 128
+                    )
                     and 0 < int(se.axis_neuron) <= min(16, int(se.neuron[-1]))
                     and cuda_compress_available()
                 )
+            if se.lmax > 2:
+                return False
             widths = [int(layer.w.shape[1]) for layer in layers]
             first = layers[0]
             first_has_residual = bool(first.resnet) and first.w.shape[1] in (
@@ -912,7 +950,7 @@ class DescrptDPA1(DescrptDPA1DP):
         em = torch.cat([sw / q, ev * (sw / q**2)], dim=-1)
         rr = (em - se.mean[:, 0, :][center_type]) / se.stddev[:, 0, :][center_type]
         moment_basis = rr
-        if se.lmax == 2:
+        if se.lmax > 1:
             moment_basis = build_dpa1_moment_basis(
                 rr,
                 ev,
@@ -958,6 +996,13 @@ class DescrptDPA1(DescrptDPA1DP):
         gr_perm = gr.permute(0, 2, 1)
         rot_mat = gr_perm[:, :, 1:4]
         gr_sub = gr[:, :, : se.axis_neuron]
+        if se.lmax > 1:
+            degree_weights = build_dpa1_degree_weights(
+                se.adam_degree_gain_raw,
+                se.lmax,
+                gr,
+            )
+            gr_sub = gr_sub * degree_weights.view(1, -1, 1)
         grrg = torch.matmul(gr_perm, gr_sub).reshape(n_total, ng * se.axis_neuron)
         grrg = grrg.to(graph.edge_vec.dtype)
         if self.concat_output_tebd:

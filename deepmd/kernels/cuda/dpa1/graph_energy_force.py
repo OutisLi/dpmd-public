@@ -69,6 +69,7 @@ def _fake(
     type_embedding: torch.Tensor,
     davg: torch.Tensor,
     dstd: torch.Tensor,
+    degree_gain: torch.Tensor,
     w1: torch.Tensor,
     b1: torch.Tensor,
     idt1: torch.Tensor,
@@ -131,6 +132,7 @@ def _cpu(
     type_embedding: torch.Tensor,
     davg: torch.Tensor,
     dstd: torch.Tensor,
+    degree_gain: torch.Tensor,
     w1: torch.Tensor,
     b1: torch.Tensor,
     idt1: torch.Tensor,
@@ -176,6 +178,7 @@ def _cpu(
             type_embedding,
             davg,
             dstd,
+            degree_gain,
             w1,
             b1,
             idt1,
@@ -240,6 +243,7 @@ def _cpu(
         atype,
         davg,
         dstd,
+        degree_gain,
         w1,
         b1,
         idt1,
@@ -392,6 +396,11 @@ def dpa1_graph_energy_force(
         type_embedding.contiguous(),
         se.mean[:, 0, :].contiguous(),
         se.stddev[:, 0, :].contiguous(),
+        (
+            se.adam_degree_gain_raw.to(torch.float32).contiguous()
+            if se.adam_degree_gain_raw is not None
+            else empty
+        ),
         w1,
         optional(layers[0].b),
         optional(layers[0].idt),

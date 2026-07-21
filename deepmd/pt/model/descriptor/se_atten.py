@@ -52,6 +52,9 @@ from deepmd.pt.utils.env_mat_stat import (
 from deepmd.pt.utils.exclude_mask import (
     PairExcludeMask,
 )
+from deepmd.pt.utils.utils import (
+    get_generator,
+)
 from deepmd.utils.env_mat_stat import (
     StatItem,
 )
@@ -80,6 +83,9 @@ if not hasattr(torch.ops.deepmd, "tabulate_fusion_se_atten"):
 
     # Note: this hack cannot actually save a model that can be runned using LAMMPS.
     torch.ops.deepmd.tabulate_fusion_se_atten = tabulate_fusion_se_atten
+
+
+_DEGREE_GAIN_INIT_STD = 0.1
 
 
 def _safe_direction(
@@ -131,10 +137,10 @@ def _build_moment_basis(
     """Build the Cartesian moment basis through angular degree ``lmax``.
 
     The first four rows preserve the existing scalar and vector environment
-    matrix exactly. For ``lmax=2``, five real symmetric-traceless components are
-    appended with the normalization
+    matrix exactly. Higher-degree rows are norm-normalized real spherical
+    harmonics in the ``m=-l,...,l`` order:
 
-    ``Y2(u) @ Y2(v) = P2(u @ v)``.
+    ``Y_l(u) @ Y_l(v) = P_l(u @ v)``.
 
     Parameters
     ----------
@@ -147,7 +153,7 @@ def _build_moment_basis(
         Zero-mean normalized radial amplitude with shape
         ``(ncenter, nnei, 1)``. Invalid and excluded neighbors are zero.
     lmax
-        Maximum angular degree. Supported values are ``1`` and ``2``.
+        Maximum angular degree. Supported values are ``1`` through ``4``.
 
     Returns
     -------
@@ -158,18 +164,64 @@ def _build_moment_basis(
         return rr
 
     x, y, z = direction.unbind(dim=-1)
+    q = x * x + y * y + z * z
     sqrt_three = 3.0**0.5
     degree_two = torch.stack(
         (
             sqrt_three * x * y,
             sqrt_three * y * z,
-            0.5 * (3.0 * z * z - 1.0),
+            0.5 * (3.0 * z * z - q),
             sqrt_three * x * z,
             0.5 * sqrt_three * (x * x - y * y),
         ),
         dim=-1,
     )
-    return torch.cat((rr, radial * degree_two), dim=-1)
+    blocks = [rr, radial * degree_two]
+    if lmax >= 3:
+        degree_three = torch.stack(
+            (
+                (5.0 / 8.0) ** 0.5 * y * (3.0 * x * x - y * y),
+                15.0**0.5 * x * y * z,
+                (3.0 / 8.0) ** 0.5 * y * (5.0 * z * z - q),
+                0.5 * z * (5.0 * z * z - 3.0 * q),
+                (3.0 / 8.0) ** 0.5 * x * (5.0 * z * z - q),
+                0.5 * 15.0**0.5 * z * (x * x - y * y),
+                (5.0 / 8.0) ** 0.5 * x * (x * x - 3.0 * y * y),
+            ),
+            dim=-1,
+        )
+        blocks.append(radial * degree_three)
+    if lmax >= 4:
+        z2 = z * z
+        x2_minus_y2 = x * x - y * y
+        degree_four = torch.stack(
+            (
+                0.5 * 35.0**0.5 * x * y * x2_minus_y2,
+                0.25 * 70.0**0.5 * y * z * (3.0 * x * x - y * y),
+                0.5 * 5.0**0.5 * x * y * (7.0 * z2 - q),
+                0.25 * 10.0**0.5 * y * z * (7.0 * z2 - 3.0 * q),
+                0.125 * (35.0 * z2 * z2 - 30.0 * z2 * q + 3.0 * q * q),
+                0.25 * 10.0**0.5 * x * z * (7.0 * z2 - 3.0 * q),
+                0.25 * 5.0**0.5 * x2_minus_y2 * (7.0 * z2 - q),
+                0.25 * 70.0**0.5 * x * z * (x * x - 3.0 * y * y),
+                0.125 * 35.0**0.5 * (x**4 - 6.0 * x * x * y * y + y**4),
+            ),
+            dim=-1,
+        )
+        blocks.append(radial * degree_four)
+    return torch.cat(blocks, dim=-1)
+
+
+def _build_degree_weights(
+    raw_gain: torch.Tensor,
+    lmax: int,
+    reference: torch.Tensor,
+) -> torch.Tensor:
+    """Expand non-negative per-degree Gram weights to packed moment rows."""
+    blocks = [torch.ones(4, dtype=reference.dtype, device=reference.device)]
+    for degree in range(2, lmax + 1):
+        blocks.append(raw_gain[degree - 2].square().expand(2 * degree + 1))
+    return torch.cat(blocks)
 
 
 @DescriptorBlock.register("se_atten")
@@ -225,7 +277,7 @@ class DescrptBlockSeAtten(DescriptorBlock):
             Number of the axis neuron :math:`M_2` (number of columns of the sub-matrix of the embedding matrix)
         lmax : int
             Maximum angular degree of the aggregated moment basis. Supported
-            values are 1 and 2.
+            values are 1 through 4.
         tebd_dim : int
             Dimension of the type embedding
         tebd_input_mode : str
@@ -283,8 +335,8 @@ class DescrptBlockSeAtten(DescriptorBlock):
         self.neuron = neuron
         self.filter_neuron = self.neuron
         self.axis_neuron = axis_neuron
-        if lmax not in (1, 2):
-            raise ValueError(f"`lmax` must be 1 or 2, got {lmax}")
+        if lmax not in (1, 2, 3, 4):
+            raise ValueError(f"`lmax` must be between 1 and 4, got {lmax}")
         self.lmax = int(lmax)
         self.tebd_dim = tebd_dim
         self.tebd_input_mode = tebd_input_mode
@@ -305,6 +357,23 @@ class DescrptBlockSeAtten(DescriptorBlock):
         self.env_protection = env_protection
         self.trainable_ln = trainable_ln
         self.seed = seed
+        if self.lmax > 1:
+            self.adam_degree_gain_raw = nn.Parameter(
+                torch.empty(
+                    self.lmax - 1,
+                    dtype=self.prec,
+                    device=env.DEVICE,
+                ),
+                requires_grad=trainable,
+            )
+            nn.init.normal_(
+                self.adam_degree_gain_raw,
+                mean=0.0,
+                std=_DEGREE_GAIN_INIT_STD,
+                generator=get_generator(child_seed(seed, 3)),
+            )
+        else:
+            self.register_parameter("adam_degree_gain_raw", None)
         #  to keep consistent with default value in this backends
         if ln_eps is None:
             ln_eps = 1e-5
@@ -712,7 +781,7 @@ class DescrptBlockSeAtten(DescriptorBlock):
         nlist_mask_flat = nlist_mask.view(nfnl, nnei)
         moment_radial = rr[..., :1]
         direction = diff_flat
-        if self.lmax == 2:
+        if self.lmax > 1:
             direction, distance, direction_mask = _safe_direction(diff_flat)
             radial_stddev = self.stddev[atype][..., :1].view(nfnl, nnei, 1)
             moment_radial = _compute_angular_radial(
@@ -911,6 +980,14 @@ class DescrptBlockSeAtten(DescriptorBlock):
         moment_t = moment.permute(0, 2, 1)
         rot_mat = moment_t[:, :, 1:4]
         moment_axis = moment[:, :, 0 : self.axis_neuron]
+        if self.lmax > 1:
+            assert self.adam_degree_gain_raw is not None
+            degree_weights = _build_degree_weights(
+                self.adam_degree_gain_raw,
+                self.lmax,
+                moment,
+            )
+            moment_axis = moment_axis * degree_weights.view(1, -1, 1)
         result = torch.matmul(
             moment_t, moment_axis
         )  # shape is [nframes*nloc, self.filter_neuron[-1], self.axis_neuron]

@@ -20,7 +20,7 @@ Usage
 ::
 
     python -m deepmd.kernels.triton.dpa1.sweep_tile_configs \\
-        --kind {conv,edge} --ng NG --h1 H1 [--basis-dim {4,9}] [--device cuda:0]
+        --kind {conv,edge} --ng NG --h1 H1 [--basis-dim {4,9,16,25}] [--device cuda:0]
 
 The printed key is ``(ng, h1, basis_dim)`` for ``se_conv`` and ``(ng, h1)`` for
 ``edge_conv``. Append it under the device name from
@@ -130,7 +130,7 @@ def sweep(
     h1 : int
         Penultimate embedding width; ``ng == 2 * h1`` is required.
     basis_dim : int
-        Angular moment width. Supported values are 4 and 9.
+        Angular moment width. Supported values are 4, 9, 16, and 25.
     nnei : int
         Neighbor count used to size the synthetic input.
     nodes : int
@@ -147,8 +147,8 @@ def sweep(
         raise ValueError(
             "se_conv sweep requires a residual last layer (ng in {h1, 2*h1})"
         )
-    if basis_dim not in (4, 9):
-        raise ValueError("se_conv sweep requires basis_dim in {4, 9}")
+    if basis_dim not in (4, 9, 16, 25):
+        raise ValueError("se_conv sweep requires basis_dim in {4, 9, 16, 25}")
     resnet_mult = ng // h1
     device = device or torch.device("cuda")
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -323,7 +323,7 @@ def main() -> None:
     parser.add_argument("--kind", choices=("conv", "edge"), default="conv")
     parser.add_argument("--ng", type=int, required=True)
     parser.add_argument("--h1", type=int, required=True)
-    parser.add_argument("--basis-dim", type=int, choices=(4, 9), default=4)
+    parser.add_argument("--basis-dim", type=int, choices=(4, 9, 16, 25), default=4)
     parser.add_argument("--nnei", type=int, default=181)
     parser.add_argument("--nodes", type=int, default=4096)
     parser.add_argument("--device", type=str, default="cuda:0")

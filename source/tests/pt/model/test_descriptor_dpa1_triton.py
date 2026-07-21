@@ -140,7 +140,7 @@ class TestSeConvOp(unittest.TestCase):
             for has_idt in (False, True)
             for act in (0, 1)
             for gated in (1, 0)
-            for basis_dim in (4, 9)
+            for basis_dim in (4, 9, 16, 25)
         ]
 
     def test_forward_matches_reference(self) -> None:
@@ -242,7 +242,7 @@ class TestSeConvOp(unittest.TestCase):
 
     def test_make_fx_force_trace(self) -> None:
         z2, h1, idt, tt, idx, sw, basis = _rand_conv_inputs(
-            512, 47, 128, 2, False, 169, self.device, basis_dim=9
+            512, 47, 128, 2, False, 169, self.device, basis_dim=25
         )
         gout = torch.randn_like(
             _se_conv_reference(z2, h1, idt, tt, idx, sw, basis, 2, 0, 1)

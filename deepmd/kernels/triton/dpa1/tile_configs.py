@@ -9,7 +9,7 @@ and a warp count:
   per block. ``BLOCK_N`` bounds the live ``(BLOCK_N, channels)`` register
   footprint of the backward pass; oversized blocks spill and collapse
   throughput, so the universal default is kept small. Its key is
-  ``(ng, H1, basis_dim)`` because the 4-row and 9-row moments have different
+  ``(ng, H1, basis_dim)`` because the 4/9/16/25-row moments have different
   register pressure.
 - ``edge_conv`` (concat / graph, edge-parallel): one program owns a block of
   edges and scatters them into their center nodes, so the launch is

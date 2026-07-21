@@ -290,7 +290,7 @@ DEV_INLINE EdgeStage<BASIS_DIM> stage_edge(long e,
   s.basis[1] = (x * iq2 - av[1]) * isd[1];
   s.basis[2] = (y * iq2 - av[2]) * isd[2];
   s.basis[3] = (z * iq2 - av[3]) * isd[3];
-  if constexpr (BASIS_DIM == 9) {
+  if constexpr (BASIS_DIM > 4) {
     const float inv_len = s.valid && len > 0.f ? 1.f / len : 0.f;
     const float ux = x * inv_len;
     const float uy = y * inv_len;
@@ -351,10 +351,11 @@ DEV_INLINE void moment_basis_edge_gradient(const float (&d_basis)[BASIS_DIM],
         sqrt_three * ux * uz,
         0.5f * sqrt_three * (ux * ux - uy * uy),
     };
-    float d_amp = 0.f;
+    float radial_partial = 0.f;
 #pragma unroll
-    for (int m = 0; m < 5; ++m) {
-      d_amp = fmaf(d_basis[4 + m] * inv_nnei, y2[m], d_amp);
+    for (int row = 0; row < 5; ++row) {
+      radial_partial =
+          fmaf(d_basis[4 + row] * inv_nnei, y2[row], radial_partial);
     }
     const float d4 = d_basis[4] * inv_nnei;
     const float d5 = d_basis[5] * inv_nnei;
@@ -367,11 +368,11 @@ DEV_INLINE void moment_basis_edge_gradient(const float (&d_basis)[BASIS_DIM],
     const float unit_dot = grad_ux * ux + grad_uy * uy + grad_uz * uz;
     const float amplitude = sw * inv_q * inv_dstd[0];
     const float amplitude_grad = inv_dstd[0] * inv_q * (dsw - sw * inv_q);
-    grad_x += d_amp * amplitude_grad * ux +
+    grad_x += radial_partial * amplitude_grad * ux +
               amplitude * inv_len * (grad_ux - unit_dot * ux);
-    grad_y += d_amp * amplitude_grad * uy +
+    grad_y += radial_partial * amplitude_grad * uy +
               amplitude * inv_len * (grad_uy - unit_dot * uy);
-    grad_z += d_amp * amplitude_grad * uz +
+    grad_z += radial_partial * amplitude_grad * uz +
               amplitude * inv_len * (grad_uz - unit_dot * uz);
   }
 
@@ -392,7 +393,7 @@ DEV_INLINE void scan_runs(int tid,
                           int* run_begin,
                           int* run_of,
                           int* n_runs) {
-  constexpr int TILE = NW * 32;  // edges per tile
+  constexpr int TILE = NW * 32;
   const int r = tid;
   bool head = false;
   if (r < TILE) {
@@ -529,6 +530,15 @@ DEV_INLINE float gate_factor(const float* __restrict__ gate_table,
 //   rot_mat[n, i, :]      = gr[n, 1:4, i]
 // plus the appended center type embedding when concat_tebd is set.
 // ======================================================================
+DEV_INLINE float moment_row_weight(int row,
+                                   const float* __restrict__ degree_gain_raw) {
+  if (row < 4) {
+    return 1.0f;
+  }
+  const float gain = __ldg(degree_gain_raw);
+  return gain * gain;
+}
+
 template <int BASIS_DIM>
 __global__ void gram_kernel(int n_node,
                             int ng,
@@ -536,6 +546,7 @@ __global__ void gram_kernel(int n_node,
                             int tebd_dim,
                             int concat_tebd,
                             const float* __restrict__ gr,
+                            const float* __restrict__ degree_gain_raw,
                             const float* __restrict__ type_embedding,
                             const long* __restrict__ atype,
                             float* __restrict__ grrg,
@@ -553,7 +564,9 @@ __global__ void gram_kernel(int n_node,
       float value = 0.f;
 #pragma unroll
       for (int k = 0; k < BASIS_DIM; ++k) {
-        value = fmaf(s_gr[k * ng + i], s_gr[k * ng + j], value);
+        const float weight =
+            BASIS_DIM == 4 ? 1.0f : moment_row_weight(k, degree_gain_raw);
+        value = fmaf(s_gr[k * ng + i] * weight, s_gr[k * ng + j], value);
       }
       out[i * axis + j] = value;
     }
@@ -585,6 +598,7 @@ __global__ void gram_backward_kernel(int n_node,
                                      const float* __restrict__ d_grrg,
                                      const float* __restrict__ d_rot,
                                      const float* __restrict__ gr,
+                                     const float* __restrict__ degree_gain_raw,
                                      float* __restrict__ dgr) {
   const int n = blockIdx.x;
   extern __shared__ float sm[];
@@ -613,6 +627,12 @@ __global__ void gram_backward_kernel(int n_node,
         for (int k = 0; k < BASIS_DIM; ++k) {
           acc[k] = fmaf(d, s_gr[k * ng + i], acc[k]);
         }
+      }
+    }
+    if constexpr (BASIS_DIM > 4) {
+#pragma unroll
+      for (int k = 0; k < BASIS_DIM; ++k) {
+        acc[k] *= moment_row_weight(k, degree_gain_raw);
       }
     }
     if (d_rot) {

@@ -55,6 +55,26 @@ class TestDescrptSeAttenV2(unittest.TestCase, TestCaseSingleFrameWithNlist):
         self.assertEqual(restored.se_atten.lmax, 2)
         torch.testing.assert_close(restored_result, result)
 
+    def test_lmax_four_degree_gain_serialization(self) -> None:
+        descriptor = DescrptSeAttenV2(
+            self.rcut,
+            self.rcut_smth,
+            self.sel_mix,
+            self.nt,
+            lmax=4,
+            attn_layer=0,
+            precision="float64",
+            seed=GLOBAL_SEED,
+        ).to(env.DEVICE)
+        restored = DescrptSeAttenV2.deserialize(descriptor.serialize()).to(env.DEVICE)
+        self.assertEqual(restored.se_atten.lmax, 4)
+        assert descriptor.se_atten.adam_degree_gain_raw is not None
+        assert restored.se_atten.adam_degree_gain_raw is not None
+        torch.testing.assert_close(
+            restored.se_atten.adam_degree_gain_raw,
+            descriptor.se_atten.adam_degree_gain_raw,
+        )
+
     def test_consistency(
         self,
     ) -> None:

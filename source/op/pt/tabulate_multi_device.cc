@@ -58,8 +58,10 @@ void TabulateFusionSeAForward(const torch::Tensor& table_tensor,
   const int64_t nloc = em_tensor.size(0);
   const int64_t nnei = em_tensor.size(1);
   const int64_t ndescrpt = em_tensor.size(2);
-  TORCH_CHECK(ndescrpt == 4 || ndescrpt == 9,
-              "The environment basis dimension must be 4 or 9, got ", ndescrpt);
+  TORCH_CHECK(
+      ndescrpt == 4 || ndescrpt == 9 || ndescrpt == 16 || ndescrpt == 25,
+      "The environment basis dimension must be 4, 9, 16, or 25, got ",
+      ndescrpt);
   // compute
   if (device == "GPU") {
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM

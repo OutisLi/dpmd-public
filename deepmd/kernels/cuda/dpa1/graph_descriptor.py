@@ -58,6 +58,7 @@ from typing import (
 import torch
 
 from deepmd.dpmodel.descriptor.dpa1 import (
+    build_dpa1_degree_weights,
     build_dpa1_moment_basis,
 )
 from deepmd.kernels.triton.dpa1.activation import (
@@ -90,6 +91,7 @@ def _forward_fake(
     type_embedding: torch.Tensor,
     davg: torch.Tensor,
     dstd: torch.Tensor,
+    degree_gain: torch.Tensor,
     w1: torch.Tensor,
     b1: torch.Tensor,
     idt1: torch.Tensor,
@@ -169,6 +171,7 @@ def _setup_context(ctx: Any, inputs: tuple, output: tuple) -> None:
         type_embedding,
         davg,
         dstd,
+        degree_gain,
         w1,
         b1,
         idt1,
@@ -205,6 +208,7 @@ def _setup_context(ctx: Any, inputs: tuple, output: tuple) -> None:
         atype,
         davg,
         dstd,
+        degree_gain,
         w1,
         b1,
         idt1,
@@ -249,6 +253,7 @@ def _backward(
         atype,
         davg,
         dstd,
+        degree_gain,
         w1,
         b1,
         idt1,
@@ -284,6 +289,7 @@ def _backward(
         atype,
         davg,
         dstd,
+        degree_gain,
         w1,
         b1,
         idt1,
@@ -305,7 +311,7 @@ def _backward(
         protection,
         nnei,
     )
-    return (d_edge_vec,) + (None,) * 29
+    return (d_edge_vec,) + (None,) * 30
 
 
 # ======================================================================
@@ -423,14 +429,15 @@ def _cpu_embedding(
             gate = gate * sw
         gg = g * (1.0 + gate)
     moment_basis = rr
-    if basis_dim == 9:
+    if basis_dim > 4:
+        lmax = {9: 2, 16: 3, 25: 4}[basis_dim]
         moment_basis = build_dpa1_moment_basis(
             rr,
             ev,
             sw,
             dstd[center_type, 0:1],
             edge_mask,
-            2,
+            lmax,
             protection,
         )
     return moment_basis, pre2, pre3, g, gg
@@ -443,6 +450,7 @@ def _cpu_outputs(
     edge_mask: torch.Tensor,
     atype: torch.Tensor,
     type_embedding: torch.Tensor | None,
+    degree_gain: torch.Tensor,
     ng: int,
     axis: int,
     concat_tebd: int,
@@ -461,7 +469,12 @@ def _cpu_outputs(
     gr.index_add_(0, edge_index[1], outer)
     gr = gr / nnei
     gr_t = gr.permute(0, 2, 1)
-    grrg = torch.matmul(gr_t, gr[:, :, :axis]).reshape(n_node, ng * axis)
+    gr_axis = gr[:, :, :axis]
+    if moment_basis.shape[-1] > 4:
+        lmax = {9: 2, 16: 3, 25: 4}[moment_basis.shape[-1]]
+        degree_weights = build_dpa1_degree_weights(degree_gain, lmax, gr)
+        gr_axis = gr_axis * degree_weights.view(1, -1, 1)
+    grrg = torch.matmul(gr_t, gr_axis).reshape(n_node, ng * axis)
     rot_mat = gr_t[:, :, 1:4].contiguous()
     if concat_tebd:
         grrg = torch.cat([grrg, type_embedding[atype]], dim=-1)
@@ -476,6 +489,7 @@ def _cpu_forward(
     type_embedding: torch.Tensor,
     davg: torch.Tensor,
     dstd: torch.Tensor,
+    degree_gain: torch.Tensor,
     w1: torch.Tensor,
     b1: torch.Tensor,
     idt1: torch.Tensor,
@@ -541,6 +555,7 @@ def _cpu_forward(
         edge_mask,
         atype,
         type_embedding,
+        degree_gain,
         ng,
         axis,
         concat_tebd,
@@ -573,6 +588,7 @@ def _cpu_backward(
     atype: torch.Tensor,
     davg: torch.Tensor,
     dstd: torch.Tensor,
+    degree_gain: torch.Tensor,
     w1: torch.Tensor,
     b1: torch.Tensor,
     idt1: torch.Tensor,
@@ -637,6 +653,7 @@ def _cpu_backward(
             edge_mask,
             atype,
             None,
+            degree_gain,
             ng,
             axis,
             0,
@@ -751,6 +768,11 @@ def dpa1_graph_descriptor(
     else:
         gate_table = empty.reshape(0, 0)
         smooth = 0
+    degree_gain = (
+        se.adam_degree_gain_raw.to(torch.float32).contiguous()
+        if se.adam_degree_gain_raw is not None
+        else empty
+    )
     w1, w2, w3 = (layer.w.contiguous() for layer in layers)
     grrg, rot_mat, *_aux = torch.ops.deepmd.dpa1_graph_descriptor(
         graph.edge_vec.contiguous(),
@@ -761,6 +783,7 @@ def dpa1_graph_descriptor(
         # mean / stddev are slot-independent; slot 0 is the canonical (T, 4).
         se.mean[:, 0, :].contiguous(),
         se.stddev[:, 0, :].contiguous(),
+        degree_gain,
         w1,
         optional(layers[0].b),
         optional(layers[0].idt),

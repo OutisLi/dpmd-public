@@ -70,6 +70,7 @@ def _forward_fake(
     type_embedding: torch.Tensor,
     average: torch.Tensor,
     inverse_stddev: torch.Tensor,
+    degree_gain: torch.Tensor,
     table: torch.Tensor,
     gate_table: torch.Tensor,
     type_one_side: int,
@@ -93,6 +94,7 @@ def _forward_fake(
         destination_row_ptr,
         average,
         inverse_stddev,
+        degree_gain,
         gate_table,
         type_one_side,
         smooth,
@@ -132,6 +134,7 @@ def _backward_fake(
     atype: torch.Tensor,
     average: torch.Tensor,
     inverse_stddev: torch.Tensor,
+    degree_gain: torch.Tensor,
     table: torch.Tensor,
     gate_table: torch.Tensor,
     type_one_side: int,
@@ -156,6 +159,7 @@ def _backward_fake(
         atype,
         average,
         inverse_stddev,
+        degree_gain,
         table,
         gate_table,
         type_one_side,
@@ -219,9 +223,9 @@ def _cpu_forward(*args: Any) -> tuple[torch.Tensor, ...]:
         edge_mask,
         destination_order,
         destination_row_ptr,
-        *tail[:11],
+        *tail[:12],
         True,
-        *tail[11:],
+        *tail[12:],
     )
 
 
@@ -246,9 +250,9 @@ def _cpu_backward(*args: Any) -> torch.Tensor:
         edge_mask,
         destination_order,
         destination_row_ptr,
-        *tail[:8],
+        *tail[:9],
         True,
-        *tail[8:],
+        *tail[9:],
     )
 
 
@@ -330,6 +334,11 @@ def dpa1_canonical_compress_energy_force(
     compress_data = desc.compress_data[0].contiguous()
     gate_table = desc.type_embd_data.contiguous()
     inverse_stddev = torch.reciprocal(se.stddev[:, 0, :]).contiguous()
+    degree_gain = (
+        se.adam_degree_gain_raw.to(torch.float32).contiguous()
+        if se.adam_degree_gain_raw is not None
+        else compress_data.new_empty(0)
+    )
     from torch.fx.experimental.proxy_tensor import (
         disable_proxy_modes_tracing,
     )
@@ -347,6 +356,7 @@ def dpa1_canonical_compress_energy_force(
         type_embedding,
         se.mean[:, 0, :].contiguous(),
         inverse_stddev,
+        degree_gain,
         compress_data,
         gate_table,
         int(se.type_one_side),
@@ -428,6 +438,7 @@ def dpa1_canonical_compress_energy_force(
         atype,
         se.mean[:, 0, :].contiguous(),
         inverse_stddev,
+        degree_gain,
         compress_data,
         gate_table,
         int(se.type_one_side),

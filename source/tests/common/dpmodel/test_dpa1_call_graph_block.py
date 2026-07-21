@@ -40,7 +40,7 @@ class TestDpa1BlockCallGraph:
 
     @pytest.mark.parametrize("type_one_side", [False, True])  # tebd concat branch
     @pytest.mark.parametrize("sel", [[20], [3]])  # non-binding AND binding
-    @pytest.mark.parametrize("lmax", [1, 2])
+    @pytest.mark.parametrize("lmax", [1, 2, 3, 4])
     def test_block_graph_equals_dense_any_sel(self, sel, type_one_side, lmax) -> None:
         """Graph block output is bit-exact with the dense block on the same nlist.
 
@@ -249,7 +249,7 @@ class TestDpa1BlockCallGraphStrip:
         "type_one_side", [False, True]
     )  # two-side vs one-side strip table
     @pytest.mark.parametrize("smooth", [False, True])  # gg_t switch-smoothing branch
-    @pytest.mark.parametrize("lmax", [1, 2])
+    @pytest.mark.parametrize("lmax", [1, 2, 3, 4])
     def test_strip_attn0_equals_dense(self, type_one_side, smooth, lmax) -> None:
         """attn_layer=0: no attention, so strip parity is bit-exact for both smooth values."""
         dd = self._make(type_one_side, smooth, attn_layer=0, lmax=lmax)

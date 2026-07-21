@@ -15,7 +15,7 @@ the last embedding pre-activation ``h1 @ W2 + b2``, ``h1`` is the
 penultimate activation feeding the resnet, ``idt`` is the last layer's per-
 channel timestep (all ones when ``resnet_dt`` is off), ``tt`` is the type-pair
 embedding table with per-edge row index ``idx``, ``sw`` is the smooth radial
-cutoff, and ``basis`` is the 4-row or 9-row angular moment basis. The
+cutoff, and ``basis`` is the 4/9/16/25-row angular moment basis. The
 ``1 / nnei`` normalization of the moment is applied by the descriptor after this
 operator (matching the eager and tabulated paths), so the operator returns the
 unnormalized moment ``basis^T @ gg``.
@@ -753,7 +753,7 @@ def se_conv(
         Smooth radial cutoff with shape (N, nnei).
     basis : Tensor
         Angular moment basis with shape (N, nnei, basis_dim), where
-        ``basis_dim`` is 4 for ``lmax=1`` and 9 for ``lmax=2``.
+        ``basis_dim`` is ``(lmax + 1) ** 2`` for ``lmax`` from 1 through 4.
     resnet_mult : int
         Residual structure of the last layer: ``2`` (width doubling), ``1``
         (identity), or ``0`` (no residual).
@@ -841,7 +841,7 @@ def se_atten_conv(
     sw : Tensor or None
         Smooth radial cutoff with shape (N, nnei); ``None`` for concat.
     basis : Tensor
-        Angular moment basis with shape (N, nnei, 4) or (N, nnei, 9).
+        Angular moment basis with shape (N, nnei, basis_dim).
     gated : int
         ``1`` (strip) applies the type-pair gate; ``0`` (concat) skips it.
 

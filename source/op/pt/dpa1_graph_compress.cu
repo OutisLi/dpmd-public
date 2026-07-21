@@ -29,6 +29,7 @@
 #include <type_traits>
 
 #include "dpa1_graph_compress_tuning.h"
+#include "dpa1_moment_basis.cuh"
 
 namespace {
 
@@ -233,7 +234,7 @@ __device__ __forceinline__ EdgeEnvironment<BasisDim> load_environment(
                          center_inverse_stddev[2] * inverse_neighbors;
   environment.basis[3] = (environment.z * radial_scale - center_average[3]) *
                          center_inverse_stddev[3] * inverse_neighbors;
-  if constexpr (BasisDim == 9) {
+  if constexpr (BasisDim > 4) {
     const float inverse_length =
         environment.radius > 0.0f ? __fdividef(1.0f, environment.radius) : 0.0f;
     const float ux = environment.x * inverse_length;
@@ -243,12 +244,13 @@ __device__ __forceinline__ EdgeEnvironment<BasisDim> load_environment(
                              ? environment.switch_factor * inverse_radius *
                                    center_inverse_stddev[0] * inverse_neighbors
                              : 0.0f;
-    constexpr float sqrt_three = 1.7320508075688772935f;
-    environment.basis[4] = radial * sqrt_three * ux * uy;
-    environment.basis[5] = radial * sqrt_three * uy * uz;
-    environment.basis[6] = radial * 0.5f * (3.0f * uz * uz - 1.0f);
-    environment.basis[7] = radial * sqrt_three * ux * uz;
-    environment.basis[8] = radial * 0.5f * sqrt_three * (ux * ux - uy * uy);
+    if constexpr (BasisDim == 9) {
+      deepmd::dpa1::fill_degree_two_basis<BasisDim>(environment.basis, ux, uy,
+                                                    uz, radial);
+    } else {
+      deepmd::dpa1::fill_angular_basis<BasisDim>(environment.basis, ux, uy, uz,
+                                                 radial);
+    }
   }
   environment.pair_index =
       one_side ? neighbor_type : center_type * ntypes + neighbor_type;
@@ -328,43 +330,17 @@ __device__ __forceinline__ void store_edge_gradient(
   float output_y = coefficient * environment.y + vector_scale * gradient_y;
   float output_z = coefficient * environment.z + vector_scale * gradient_z;
   if constexpr (BasisDim == 9) {
-    const float ux = environment.x * inverse_length;
-    const float uy = environment.y * inverse_length;
-    const float uz = environment.z * inverse_length;
-    constexpr float sqrt_three = 1.7320508075688772935f;
-    const float y2[5] = {
-        sqrt_three * ux * uy,
-        sqrt_three * uy * uz,
-        0.5f * (3.0f * uz * uz - 1.0f),
-        sqrt_three * ux * uz,
-        0.5f * sqrt_three * (ux * ux - uy * uy),
-    };
-    float amplitude_partial = 0.0f;
-#pragma unroll
-    for (int m = 0; m < 5; ++m) {
-      amplitude_partial = fmaf(partial_basis[4 + m] * inverse_neighbors, y2[m],
-                               amplitude_partial);
-    }
-    const float d4 = partial_basis[4] * inverse_neighbors;
-    const float d5 = partial_basis[5] * inverse_neighbors;
-    const float d6 = partial_basis[6] * inverse_neighbors;
-    const float d7 = partial_basis[7] * inverse_neighbors;
-    const float d8 = partial_basis[8] * inverse_neighbors;
-    const float grad_ux = sqrt_three * (d4 * uy + d7 * uz + d8 * ux);
-    const float grad_uy = sqrt_three * (d4 * ux + d5 * uz - d8 * uy);
-    const float grad_uz = sqrt_three * (d5 * uy + d7 * ux) + 3.0f * d6 * uz;
-    const float unit_dot = grad_ux * ux + grad_uy * uy + grad_uz * uz;
-    const float amplitude =
-        environment.switch_factor * inverse_denominator * inverse_stddev0;
-    const float amplitude_gradient =
-        inverse_stddev0 * inverse_denominator *
-        (switch_gradient - environment.switch_factor * inverse_denominator);
-    output_x += amplitude_partial * amplitude_gradient * ux +
-                amplitude * inverse_length * (grad_ux - unit_dot * ux);
-    output_y += amplitude_partial * amplitude_gradient * uy +
-                amplitude * inverse_length * (grad_uy - unit_dot * uy);
-    output_z += amplitude_partial * amplitude_gradient * uz +
-                amplitude * inverse_length * (grad_uz - unit_dot * uz);
+    deepmd::dpa1::add_degree_two_edge_gradient<BasisDim>(
+        partial_basis, inverse_neighbors, environment.x, environment.y,
+        environment.z, environment.radius, inverse_denominator, inverse_stddev0,
+        environment.switch_factor, switch_gradient, output_x, output_y,
+        output_z);
+  } else if constexpr (BasisDim > 9) {
+    deepmd::dpa1::add_angular_edge_gradient<BasisDim>(
+        partial_basis, inverse_neighbors, environment.x, environment.y,
+        environment.z, environment.radius, inverse_denominator, inverse_stddev0,
+        environment.switch_factor, switch_gradient, output_x, output_y,
+        output_z);
   }
   edge_gradient[edge * 3 + 0] = output_x;
   edge_gradient[edge * 3 + 1] = output_y;
@@ -433,6 +409,7 @@ __launch_bounds__(kThreads, MinimumBlocks) void compressed_forward_kernel(
     const float* __restrict__ inverse_stddev,
     const float* __restrict__ table,
     const float* __restrict__ gate_table,
+    const float* __restrict__ degree_gain_raw,
     float* __restrict__ descriptor,
     float* __restrict__ rotation,
     float* __restrict__ moment) {
@@ -581,7 +558,10 @@ __launch_bounds__(kThreads, MinimumBlocks) void compressed_forward_kernel(
         for (int k = 0; k < BasisDim; ++k) {
           const float axis_value =
               __shfl_sync(kWarpMask, accumulator[k][0], axis_channel);
-          value = fmaf(accumulator[k][group], axis_value, value);
+          const float weight =
+              BasisDim == 4 ? 1.0f
+                            : deepmd::dpa1::degree_weight(k, degree_gain_raw);
+          value = fmaf(accumulator[k][group] * weight, axis_value, value);
         }
         if (lane < 16) {
           output[channel * axis + axis_channel] = value;
@@ -604,7 +584,10 @@ __launch_bounds__(kThreads, MinimumBlocks) void compressed_forward_kernel(
         for (int k = 0; k < BasisDim; ++k) {
           const float axis_value =
               __shfl_sync(kWarpMask, accumulator[k][0], axis_channel);
-          value = fmaf(accumulator[k][group], axis_value, value);
+          const float weight =
+              BasisDim == 4 ? 1.0f
+                            : deepmd::dpa1::degree_weight(k, degree_gain_raw);
+          value = fmaf(accumulator[k][group] * weight, axis_value, value);
         }
         if (channel < Width) {
           output[channel * axis + axis_channel] = value;
@@ -664,6 +647,7 @@ __launch_bounds__(kThreads, MinimumBlocks) void compressed_backward_kernel(
     const float* __restrict__ inverse_stddev,
     const float* __restrict__ table,
     const float* __restrict__ gate_table,
+    const float* __restrict__ degree_gain_raw,
     float* __restrict__ edge_gradient) {
   constexpr unsigned kWarpMask = 0xffffffffu;
   constexpr int kGradientGroups = ChannelPolicy<Width>::gradient_groups;
@@ -716,6 +700,12 @@ __launch_bounds__(kThreads, MinimumBlocks) void compressed_backward_kernel(
               fmaf(value, __ldg(moment + moment_base + k * Width + input),
                    gradient[k][group]);
         }
+      }
+    }
+    if constexpr (BasisDim > 4) {
+#pragma unroll
+      for (int k = 0; k < BasisDim; ++k) {
+        gradient[k][group] *= deepmd::dpa1::degree_weight(k, degree_gain_raw);
       }
     }
     if (rotation_gradient != nullptr && channel < Width) {
@@ -967,6 +957,7 @@ void launch_forward_variant(long node_count,
                             const torch::Tensor& inverse_stddev,
                             const torch::Tensor& table,
                             const torch::Tensor& gate_table,
+                            const torch::Tensor& degree_gain,
                             torch::Tensor& descriptor,
                             torch::Tensor& rotation,
                             torch::Tensor& moment,
@@ -986,7 +977,9 @@ void launch_forward_variant(long node_count,
       destination_row_ptr.data_ptr<long>(), atype.data_ptr<long>(),
       type_embedding.data_ptr<float>(), average.data_ptr<float>(),
       inverse_stddev.data_ptr<float>(), table.data_ptr<float>(),
-      gate_table.data_ptr<float>(), descriptor.data_ptr<float>(),
+      gate_table.data_ptr<float>(),
+      degree_gain.numel() ? degree_gain.data_ptr<float>() : nullptr,
+      descriptor.data_ptr<float>(),
       write_rotation ? rotation.data_ptr<float>() : nullptr,
       moment.data_ptr<float>());
 }
@@ -1024,6 +1017,7 @@ void launch_forward(long node_count,
                     const torch::Tensor& inverse_stddev,
                     const torch::Tensor& table,
                     const torch::Tensor& gate_table,
+                    const torch::Tensor& degree_gain,
                     torch::Tensor& descriptor,
                     torch::Tensor& rotation,
                     torch::Tensor& moment,
@@ -1034,12 +1028,13 @@ void launch_forward(long node_count,
       device,
       static_cast<int>(KernelDirection::kForward),
       Width,
+      BasisDim,
       axis,
       Canonical ? 1 : 0,
       static_cast<int>(sizeof(index_t)),
       (one_side ? 1 : 0) | (smooth ? 2 : 0) |
           (concatenate_type_embedding ? 4 : 0) | (write_rotation ? 8 : 0) |
-          (Masked ? 16 : 0) | (BasisDim == 9 ? 32 : 0),
+          (Masked ? 16 : 0),
       concatenate_type_embedding ? type_embedding_dim : 0,
       type_count_class(ntypes),
       workload_size_class(node_count, properties.multiProcessorCount),
@@ -1053,7 +1048,7 @@ void launch_forward(long node_count,
           rcut_smooth, protection, inverse_neighbors, lower, upper, table_max,
           stride0, stride1, edge_vec, edge_index, edge_mask, destination_order,
           destination_row_ptr, atype, type_embedding, average, inverse_stddev,
-          table, gate_table, descriptor, rotation, moment, stream);
+          table, gate_table, degree_gain, descriptor, rotation, moment, stream);
     } else {
       launch_forward_variant<Width, BasisDim, index_t, Canonical, Masked, 2>(
           count, config.threads, ntypes, one_side, smooth, axis,
@@ -1061,7 +1056,7 @@ void launch_forward(long node_count,
           rcut_smooth, protection, inverse_neighbors, lower, upper, table_max,
           stride0, stride1, edge_vec, edge_index, edge_mask, destination_order,
           destination_row_ptr, atype, type_embedding, average, inverse_stddev,
-          table, gate_table, descriptor, rotation, moment, stream);
+          table, gate_table, degree_gain, descriptor, rotation, moment, stream);
     }
   };
   const LaunchConfig config =
@@ -1106,6 +1101,7 @@ void launch_backward_variant(long node_count,
                              const torch::Tensor& inverse_stddev,
                              const torch::Tensor& table,
                              const torch::Tensor& gate_table,
+                             const torch::Tensor& degree_gain,
                              torch::Tensor& edge_gradient,
                              cudaStream_t stream) {
   const int warps_per_block = threads / kWarpSize;
@@ -1124,6 +1120,7 @@ void launch_backward_variant(long node_count,
       destination_row_ptr.data_ptr<long>(), atype.data_ptr<long>(),
       average.data_ptr<float>(), inverse_stddev.data_ptr<float>(),
       table.data_ptr<float>(), gate_table.data_ptr<float>(),
+      degree_gain.numel() ? degree_gain.data_ptr<float>() : nullptr,
       edge_gradient.data_ptr<float>());
 }
 
@@ -1161,6 +1158,7 @@ void launch_backward(long node_count,
                      const torch::Tensor& inverse_stddev,
                      const torch::Tensor& table,
                      const torch::Tensor& gate_table,
+                     const torch::Tensor& degree_gain,
                      torch::Tensor& edge_gradient,
                      cudaStream_t stream) {
   const int device = edge_vec.get_device();
@@ -1169,12 +1167,12 @@ void launch_backward(long node_count,
       device,
       static_cast<int>(KernelDirection::kBackward),
       Width,
+      BasisDim,
       axis,
       Canonical ? 1 : 0,
       static_cast<int>(sizeof(index_t)),
       (one_side ? 1 : 0) | (smooth ? 2 : 0) |
-          (rotation_gradient != nullptr ? 8 : 0) | (Masked ? 16 : 0) |
-          (BasisDim == 9 ? 32 : 0),
+          (rotation_gradient != nullptr ? 8 : 0) | (Masked ? 16 : 0),
       descriptor_stride,
       type_count_class(ntypes),
       workload_size_class(node_count, properties.multiProcessorCount),
@@ -1188,7 +1186,8 @@ void launch_backward(long node_count,
           lower, upper, table_max, stride0, stride1, descriptor_gradient,
           rotation_gradient, moment, edge_vec, edge_index, edge_mask,
           destination_order, destination_row_ptr, atype, average,
-          inverse_stddev, table, gate_table, edge_gradient, stream);
+          inverse_stddev, table, gate_table, degree_gain, edge_gradient,
+          stream);
     } else {
       launch_backward_variant<Width, BasisDim, index_t, Canonical, Masked, 2>(
           count, config.threads, edge_count, ntypes, one_side, smooth, axis,
@@ -1196,7 +1195,8 @@ void launch_backward(long node_count,
           lower, upper, table_max, stride0, stride1, descriptor_gradient,
           rotation_gradient, moment, edge_vec, edge_index, edge_mask,
           destination_order, destination_row_ptr, atype, average,
-          inverse_stddev, table, gate_table, edge_gradient, stream);
+          inverse_stddev, table, gate_table, degree_gain, edge_gradient,
+          stream);
     }
   };
   const LaunchConfig config =
@@ -1243,48 +1243,53 @@ void dispatch_forward(int width,
                       const torch::Tensor& inverse_stddev,
                       const torch::Tensor& table,
                       const torch::Tensor& gate_table,
+                      const torch::Tensor& degree_gain,
                       torch::Tensor& descriptor,
                       torch::Tensor& rotation,
                       torch::Tensor& moment,
                       cudaStream_t stream) {
-#define DISPATCH_WIDTH(value)                                               \
-  if (width == value) {                                                     \
-    if (canonical && !masked) {                                             \
-      launch_forward<value, BasisDim, index_t, true, false>(                \
-          node_count, ntypes, one_side, smooth, axis,                       \
-          concatenate_type_embedding, write_rotation, type_embedding_dim,   \
-          rcut, rcut_smooth, protection, inverse_neighbors, lower, upper,   \
-          table_max, stride0, stride1, edge_vec, edge_index, edge_mask,     \
-          destination_order, destination_row_ptr, atype, type_embedding,    \
-          average, inverse_stddev, table, gate_table, descriptor, rotation, \
-          moment, stream);                                                  \
-    } else if (canonical) {                                                 \
-      launch_forward<value, BasisDim, index_t, true, true>(                 \
-          node_count, ntypes, one_side, smooth, axis,                       \
-          concatenate_type_embedding, write_rotation, type_embedding_dim,   \
-          rcut, rcut_smooth, protection, inverse_neighbors, lower, upper,   \
-          table_max, stride0, stride1, edge_vec, edge_index, edge_mask,     \
-          destination_order, destination_row_ptr, atype, type_embedding,    \
-          average, inverse_stddev, table, gate_table, descriptor, rotation, \
-          moment, stream);                                                  \
-    } else {                                                                \
-      launch_forward<value, BasisDim, index_t, false, true>(                \
-          node_count, ntypes, one_side, smooth, axis,                       \
-          concatenate_type_embedding, write_rotation, type_embedding_dim,   \
-          rcut, rcut_smooth, protection, inverse_neighbors, lower, upper,   \
-          table_max, stride0, stride1, edge_vec, edge_index, edge_mask,     \
-          destination_order, destination_row_ptr, atype, type_embedding,    \
-          average, inverse_stddev, table, gate_table, descriptor, rotation, \
-          moment, stream);                                                  \
-    }                                                                       \
-    return;                                                                 \
+#define DISPATCH_WIDTH(value)                                                  \
+  if (width == value) {                                                        \
+    if (canonical && !masked) {                                                \
+      launch_forward<value, BasisDim, index_t, true, false>(                   \
+          node_count, ntypes, one_side, smooth, axis,                          \
+          concatenate_type_embedding, write_rotation, type_embedding_dim,      \
+          rcut, rcut_smooth, protection, inverse_neighbors, lower, upper,      \
+          table_max, stride0, stride1, edge_vec, edge_index, edge_mask,        \
+          destination_order, destination_row_ptr, atype, type_embedding,       \
+          average, inverse_stddev, table, gate_table, degree_gain, descriptor, \
+          rotation, moment, stream);                                           \
+    } else if (canonical) {                                                    \
+      launch_forward<value, BasisDim, index_t, true, true>(                    \
+          node_count, ntypes, one_side, smooth, axis,                          \
+          concatenate_type_embedding, write_rotation, type_embedding_dim,      \
+          rcut, rcut_smooth, protection, inverse_neighbors, lower, upper,      \
+          table_max, stride0, stride1, edge_vec, edge_index, edge_mask,        \
+          destination_order, destination_row_ptr, atype, type_embedding,       \
+          average, inverse_stddev, table, gate_table, degree_gain, descriptor, \
+          rotation, moment, stream);                                           \
+    } else {                                                                   \
+      launch_forward<value, BasisDim, index_t, false, true>(                   \
+          node_count, ntypes, one_side, smooth, axis,                          \
+          concatenate_type_embedding, write_rotation, type_embedding_dim,      \
+          rcut, rcut_smooth, protection, inverse_neighbors, lower, upper,      \
+          table_max, stride0, stride1, edge_vec, edge_index, edge_mask,        \
+          destination_order, destination_row_ptr, atype, type_embedding,       \
+          average, inverse_stddev, table, gate_table, degree_gain, descriptor, \
+          rotation, moment, stream);                                           \
+    }                                                                          \
+    return;                                                                    \
   }
-  DISPATCH_WIDTH(8)
+  if constexpr (BasisDim <= 9) {
+    DISPATCH_WIDTH(8)
+  }
   DISPATCH_WIDTH(16)
   DISPATCH_WIDTH(32)
   DISPATCH_WIDTH(64)
   DISPATCH_WIDTH(128)
-  DISPATCH_WIDTH(256)
+  if constexpr (BasisDim <= 9) {
+    DISPATCH_WIDTH(256)
+  }
 #undef DISPATCH_WIDTH
   TORCH_CHECK(false, "dpa1_graph_compress: unsupported width ", width);
 }
@@ -1322,6 +1327,7 @@ void dispatch_backward(int width,
                        const torch::Tensor& inverse_stddev,
                        const torch::Tensor& table,
                        const torch::Tensor& gate_table,
+                       const torch::Tensor& degree_gain,
                        torch::Tensor& edge_gradient,
                        cudaStream_t stream) {
 #define DISPATCH_WIDTH(value)                                                  \
@@ -1333,7 +1339,8 @@ void dispatch_backward(int width,
           lower, upper, table_max, stride0, stride1, descriptor_gradient,      \
           rotation_gradient, moment, edge_vec, edge_index, edge_mask,          \
           destination_order, destination_row_ptr, atype, average,              \
-          inverse_stddev, table, gate_table, edge_gradient, stream);           \
+          inverse_stddev, table, gate_table, degree_gain, edge_gradient,       \
+          stream);                                                             \
     } else if (canonical) {                                                    \
       launch_backward<value, BasisDim, index_t, true, true>(                   \
           node_count, edge_count, ntypes, one_side, smooth, axis,              \
@@ -1341,7 +1348,8 @@ void dispatch_backward(int width,
           lower, upper, table_max, stride0, stride1, descriptor_gradient,      \
           rotation_gradient, moment, edge_vec, edge_index, edge_mask,          \
           destination_order, destination_row_ptr, atype, average,              \
-          inverse_stddev, table, gate_table, edge_gradient, stream);           \
+          inverse_stddev, table, gate_table, degree_gain, edge_gradient,       \
+          stream);                                                             \
     } else {                                                                   \
       launch_backward<value, BasisDim, index_t, false, true>(                  \
           node_count, edge_count, ntypes, one_side, smooth, axis,              \
@@ -1349,16 +1357,21 @@ void dispatch_backward(int width,
           lower, upper, table_max, stride0, stride1, descriptor_gradient,      \
           rotation_gradient, moment, edge_vec, edge_index, edge_mask,          \
           destination_order, destination_row_ptr, atype, average,              \
-          inverse_stddev, table, gate_table, edge_gradient, stream);           \
+          inverse_stddev, table, gate_table, degree_gain, edge_gradient,       \
+          stream);                                                             \
     }                                                                          \
     return;                                                                    \
   }
-  DISPATCH_WIDTH(8)
+  if constexpr (BasisDim <= 9) {
+    DISPATCH_WIDTH(8)
+  }
   DISPATCH_WIDTH(16)
   DISPATCH_WIDTH(32)
   DISPATCH_WIDTH(64)
   DISPATCH_WIDTH(128)
-  DISPATCH_WIDTH(256)
+  if constexpr (BasisDim <= 9) {
+    DISPATCH_WIDTH(256)
+  }
 #undef DISPATCH_WIDTH
   TORCH_CHECK(false, "dpa1_graph_compress_backward: unsupported width ", width);
 }
@@ -1421,6 +1434,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> dpa1_graph_compress(
     torch::Tensor type_embedding,
     torch::Tensor average,
     torch::Tensor inverse_stddev,
+    torch::Tensor degree_gain,
     torch::Tensor table,
     torch::Tensor gate_table,
     int64_t type_one_side,
@@ -1448,8 +1462,15 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> dpa1_graph_compress(
                   type_embedding.scalar_type() == torch::kFloat32,
               "dpa1_graph_compress: type_embedding must be contiguous fp32 "
               "on CUDA");
-  TORCH_CHECK(basis_dim == 4 || basis_dim == 9,
-              "dpa1_graph_compress: basis_dim must be 4 or 9");
+  TORCH_CHECK(
+      basis_dim == 4 || basis_dim == 9 || basis_dim == 16 || basis_dim == 25,
+      "dpa1_graph_compress: basis_dim must be 4, 9, 16, or 25");
+  const int degree_gain_size =
+      basis_dim == 4 ? 0 : (basis_dim == 9 ? 1 : (basis_dim == 16 ? 2 : 3));
+  TORCH_CHECK(degree_gain.is_contiguous() &&
+                  degree_gain.scalar_type() == torch::kFloat32 &&
+                  degree_gain.numel() == degree_gain_size,
+              "dpa1_graph_compress: degree_gain has an invalid shape or dtype");
   const int ntypes = static_cast<int>(type_embedding.size(0));
   const int type_embedding_dim = static_cast<int>(type_embedding.size(1));
   const int output_dim = width * static_cast<int>(axis) +
@@ -1480,12 +1501,16 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> dpa1_graph_compress(
           static_cast<float>(stride0), static_cast<float>(stride1),
           edge_vec_float, edge_index, edge_mask, destination_order,
           destination_row_ptr, atype, type_embedding, average, inverse_stddev,
-          table, gate_table, descriptor, rotation, moment, stream);
+          table, gate_table, degree_gain, descriptor, rotation, moment, stream);
     };
     if (basis_dim == 4) {
       dispatch(std::integral_constant<int, 4>{});
-    } else {
+    } else if (basis_dim == 9) {
       dispatch(std::integral_constant<int, 9>{});
+    } else if (basis_dim == 16) {
+      dispatch(std::integral_constant<int, 16>{});
+    } else {
+      dispatch(std::integral_constant<int, 25>{});
     }
   };
   if (edge_index.scalar_type() == torch::kInt32) {
@@ -1508,6 +1533,7 @@ torch::Tensor dpa1_graph_compress_backward(
     torch::Tensor atype,
     torch::Tensor average,
     torch::Tensor inverse_stddev,
+    torch::Tensor degree_gain,
     torch::Tensor table,
     torch::Tensor gate_table,
     int64_t type_one_side,
@@ -1530,8 +1556,10 @@ torch::Tensor dpa1_graph_compress_backward(
   validate_inputs(edge_vec, edge_index, edge_mask, destination_order,
                   destination_row_ptr, atype, average, inverse_stddev, table,
                   gate_table, width, static_cast<int>(axis));
-  TORCH_CHECK(basis_dim == 4 || basis_dim == 9,
-              "dpa1_graph_compress_backward: basis dimension must be 4 or 9");
+  TORCH_CHECK(
+      basis_dim == 4 || basis_dim == 9 || basis_dim == 16 || basis_dim == 25,
+      "dpa1_graph_compress_backward: basis dimension must be 4, 9, "
+      "16, or 25");
   if (node_count == 0) {
     return torch::zeros_like(edge_vec);
   }
@@ -1569,12 +1597,17 @@ torch::Tensor dpa1_graph_compress_backward(
           static_cast<float>(stride1), descriptor_gradient_float,
           rotation_gradient_ptr, moment, edge_vec_float, edge_index, edge_mask,
           destination_order, destination_row_ptr, atype, average,
-          inverse_stddev, table, gate_table, edge_gradient, stream);
+          inverse_stddev, table, gate_table, degree_gain, edge_gradient,
+          stream);
     };
     if (basis_dim == 4) {
       dispatch(std::integral_constant<int, 4>{});
-    } else {
+    } else if (basis_dim == 9) {
       dispatch(std::integral_constant<int, 9>{});
+    } else if (basis_dim == 16) {
+      dispatch(std::integral_constant<int, 16>{});
+    } else {
+      dispatch(std::integral_constant<int, 25>{});
     }
   };
   if (edge_index.scalar_type() == torch::kInt32) {
@@ -1593,6 +1626,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> dpa1_canonical_compress(
     torch::Tensor type_embedding,
     torch::Tensor average,
     torch::Tensor inverse_stddev,
+    torch::Tensor degree_gain,
     torch::Tensor table,
     torch::Tensor gate_table,
     int64_t type_one_side,
@@ -1620,10 +1654,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> dpa1_canonical_compress(
   auto destination_order = torch::empty({0}, source.options());
   return dpa1_graph_compress(
       edge_vec, source, edge_mask, destination_order, destination_row_ptr,
-      atype, type_embedding, average, inverse_stddev, table, gate_table,
-      type_one_side, concatenate_type_embedding, write_rotation, smooth, axis,
-      true, lower, upper, table_max, stride0, stride1, rcut, rcut_smooth,
-      protection, neighbors, basis_dim);
+      atype, type_embedding, average, inverse_stddev, degree_gain, table,
+      gate_table, type_one_side, concatenate_type_embedding, write_rotation,
+      smooth, axis, true, lower, upper, table_max, stride0, stride1, rcut,
+      rcut_smooth, protection, neighbors, basis_dim);
 }
 
 torch::Tensor dpa1_canonical_compress_backward(
@@ -1636,6 +1670,7 @@ torch::Tensor dpa1_canonical_compress_backward(
     torch::Tensor atype,
     torch::Tensor average,
     torch::Tensor inverse_stddev,
+    torch::Tensor degree_gain,
     torch::Tensor table,
     torch::Tensor gate_table,
     int64_t type_one_side,
@@ -1661,9 +1696,9 @@ torch::Tensor dpa1_canonical_compress_backward(
   return dpa1_graph_compress_backward(
       descriptor_gradient, rotation_gradient, moment, edge_vec, source,
       edge_mask, destination_order, destination_row_ptr, atype, average,
-      inverse_stddev, table, gate_table, type_one_side, smooth, axis, true,
-      lower, upper, table_max, stride0, stride1, rcut, rcut_smooth, protection,
-      neighbors);
+      inverse_stddev, degree_gain, table, gate_table, type_one_side, smooth,
+      axis, true, lower, upper, table_max, stride0, stride1, rcut, rcut_smooth,
+      protection, neighbors);
 }
 
 TORCH_LIBRARY_FRAGMENT(deepmd, library) {
@@ -1672,7 +1707,7 @@ TORCH_LIBRARY_FRAGMENT(deepmd, library) {
       "Tensor edge_mask, Tensor destination_order, "
       "Tensor destination_row_ptr, Tensor atype, "
       "Tensor type_embedding, Tensor average, Tensor inverse_stddev, "
-      "Tensor table, Tensor gate_table, int type_one_side, "
+      "Tensor degree_gain, Tensor table, Tensor gate_table, int type_one_side, "
       "int concatenate_type_embedding, int write_rotation, int smooth, "
       "int axis, bool canonical, float lower, float upper, float table_max, "
       "float stride0, float stride1, "
@@ -1685,7 +1720,7 @@ TORCH_LIBRARY_FRAGMENT(deepmd, library) {
       "Tensor? rotation_gradient, Tensor moment, Tensor edge_vec, "
       "Tensor edge_index, Tensor edge_mask, Tensor destination_order, "
       "Tensor destination_row_ptr, Tensor atype, Tensor average, "
-      "Tensor inverse_stddev, Tensor table, "
+      "Tensor inverse_stddev, Tensor degree_gain, Tensor table, "
       "Tensor gate_table, int type_one_side, int smooth, int axis, "
       "bool canonical, float lower, float upper, float table_max, float "
       "stride0, "
@@ -1696,7 +1731,8 @@ TORCH_LIBRARY_FRAGMENT(deepmd, library) {
   library.def(
       "dpa1_canonical_compress(Tensor edge_vec, Tensor source, "
       "Tensor destination_row_ptr, Tensor atype, Tensor type_embedding, "
-      "Tensor average, Tensor inverse_stddev, Tensor table, "
+      "Tensor average, Tensor inverse_stddev, Tensor degree_gain, Tensor "
+      "table, "
       "Tensor gate_table, int type_one_side, int concatenate_type_embedding, "
       "int write_rotation, int smooth, int axis, float lower, float upper, "
       "float table_max, float stride0, float stride1, float rcut, "
@@ -1708,7 +1744,8 @@ TORCH_LIBRARY_FRAGMENT(deepmd, library) {
       "dpa1_canonical_compress_backward(Tensor descriptor_gradient, "
       "Tensor? rotation_gradient, Tensor moment, Tensor edge_vec, "
       "Tensor source, Tensor destination_row_ptr, Tensor atype, "
-      "Tensor average, Tensor inverse_stddev, Tensor table, "
+      "Tensor average, Tensor inverse_stddev, Tensor degree_gain, Tensor "
+      "table, "
       "Tensor gate_table, int type_one_side, int smooth, int axis, "
       "float lower, float upper, float table_max, float stride0, "
       "float stride1, float rcut, float rcut_smooth, float protection, "
