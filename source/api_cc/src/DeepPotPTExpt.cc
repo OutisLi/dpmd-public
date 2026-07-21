@@ -319,7 +319,8 @@ void DeepPotPTExpt::init(const std::string& model,
         metadata["lower_input_kind"].as_string();
     lower_input_is_edge_ = lower_input_kind == "edge_vec";
     lower_input_is_graph_ = lower_input_kind == "graph";
-    lower_input_is_canonical_ = lower_input_kind == "dpa1_canonical";
+    lower_input_is_canonical_ = lower_input_kind == "dpa1_canonical" ||
+                                lower_input_kind == "dpa4c_canonical";
   } else {
     lower_input_is_edge_ = false;
     lower_input_is_graph_ = false;

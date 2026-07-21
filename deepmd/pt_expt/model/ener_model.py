@@ -133,15 +133,27 @@ class EnergyModel(DPModelCommon, DPEnergyModel_):
             Public energy-model outputs on the flat node axis.
         """
         from deepmd.kernels.cuda.dpa1.canonical import (
-            canonical_model_eligible,
+            canonical_model_eligible as dpa1_canonical_eligible,
+        )
+        from deepmd.kernels.cuda.dpa1.canonical import (
             dpa1_canonical_compress_energy_force,
+        )
+        from deepmd.kernels.cuda.dpa4c.canonical import (
+            canonical_model_eligible as dpa4c_canonical_eligible,
+        )
+        from deepmd.kernels.cuda.dpa4c.canonical import (
+            dpa4c_canonical_compress_energy_force,
         )
         from deepmd.pt_expt.utils.canonical_graph import (
             DPA1CanonicalGraph,
             validate_canonical_graph_shapes,
         )
 
-        if not canonical_model_eligible(self):
+        if dpa4c_canonical_eligible(self):
+            canonical_energy_force = dpa4c_canonical_compress_energy_force
+        elif dpa1_canonical_eligible(self):
+            canonical_energy_force = dpa1_canonical_compress_energy_force
+        else:
             raise ValueError("model is not eligible for compact canonical deployment")
         graph = DPA1CanonicalGraph(
             n_node=n_node,
@@ -162,17 +174,15 @@ class EnergyModel(DPModelCommon, DPEnergyModel_):
         descriptor = self.atomic_model.descriptor
         fitting = self.atomic_model.fitting_net
         atom_bias = fitting.bias_atom_e[:, 0] + self.atomic_model.out_bias[0, :, 0]
-        energy, atom_energy, force, virial, atom_virial = (
-            dpa1_canonical_compress_energy_force(
-                descriptor,
-                fitting,
-                graph,
-                atype,
-                descriptor.type_embedding.call(),
-                output_mask,
-                atom_bias,
-                do_atomic_virial,
-            )
+        energy, atom_energy, force, virial, atom_virial = canonical_energy_force(
+            descriptor,
+            fitting,
+            graph,
+            atype,
+            descriptor.type_embedding.call(),
+            output_mask,
+            atom_bias,
+            do_atomic_virial,
         )
         result = {
             "atom_energy": atom_energy,
@@ -269,6 +279,20 @@ class EnergyModel(DPModelCommon, DPEnergyModel_):
 
         Parameters
         ----------
+        coord
+            Atomic coordinates.
+        atype
+            Atomic type indices.
+        box
+            Simulation-cell vectors, or ``None`` for a non-periodic system.
+        fparam
+            Optional frame parameters.
+        aparam
+            Optional atomic parameters.
+        do_atomic_virial
+            Whether to return per-atom virials.
+        charge_spin
+            Optional frame-level charge and spin conditioning.
         neighbor_list
             The neighbor-list construction strategy forwarded to
             :meth:`call_common`.  ``None`` uses the default all-pairs builder
@@ -378,8 +402,22 @@ class EnergyModel(DPModelCommon, DPEnergyModel_):
 
         Parameters
         ----------
-        extended_coord, extended_atype, nlist, mapping, fparam, aparam, do_atomic_virial
-            Sample inputs with representative shapes (used for tracing).
+        extended_coord
+            Extended-coordinate sample used for tracing.
+        extended_atype
+            Extended atom-type sample used for tracing.
+        nlist
+            Neighbor-list sample used for tracing.
+        mapping
+            Extended-to-local mapping sample used for tracing.
+        fparam
+            Optional frame-parameter sample.
+        aparam
+            Optional atomic-parameter sample.
+        do_atomic_virial
+            Whether the traced module returns per-atom virials.
+        charge_spin
+            Optional charge/spin conditioning sample.
         **make_fx_kwargs
             Extra keyword arguments forwarded to ``make_fx``
             (e.g. ``tracing_mode="symbolic"``).
@@ -638,6 +676,19 @@ class EnergyModel(DPModelCommon, DPEnergyModel_):
         ----------
         atype, n_node, edge_index, edge_vec, edge_mask, fparam, aparam, charge_spin, do_atomic_virial
             As in :meth:`forward_lower_graph_exportable`.
+
+        destination_order
+            Destination-major edge permutation used by fused graph operators.
+
+        destination_row_ptr
+            Destination CSR row pointers.
+
+        source_order
+            Source-major edge permutation used by force assembly.
+
+        source_row_ptr
+            Source CSR row pointers.
+
         send_list, send_proc, recv_proc, send_num, recv_num, communicator, nlocal, nghost
             The 8 comm tensors (see ``_make_comm_sample_inputs`` in
             ``serialization.py``), packed into ``comm_dict`` inside the
@@ -654,6 +705,7 @@ class EnergyModel(DPModelCommon, DPEnergyModel_):
             back with synchronizing D2H reads (``4 * nlayers`` per MD
             step).  The C++ ``run_model_graph_with_comm`` implements this
             placement.
+
         n_local
             (1,) int64 ON THE MODEL DEVICE: the per-frame OWNED node
             count consumed IN-GRAPH by the owned-node energy mask (it
@@ -663,6 +715,7 @@ class EnergyModel(DPModelCommon, DPEnergyModel_):
             access).  Carries the same value as the ``nlocal`` comm
             tensor; the two inputs exist precisely to separate the
             device-compute role from the host-MPI-control role.
+
         **make_fx_kwargs
             Extra keyword arguments forwarded to ``make_fx``
             (e.g. ``tracing_mode="symbolic"``).

@@ -195,7 +195,11 @@ class DeepEval(DeepEvalBackend):
         # where the corresponding builder knob is ``nlist_backend``.
         if neighbor_graph_method not in ("auto", "dense") and getattr(
             self, "metadata", {}
-        ).get("lower_input_kind") not in ("graph", "dpa1_canonical"):
+        ).get("lower_input_kind") not in (
+            "graph",
+            "dpa1_canonical",
+            "dpa4c_canonical",
+        ):
             raise ValueError(
                 f"neighbor_graph_method={neighbor_graph_method!r} only applies to "
                 "graph-routed artifacts (lower_input_kind == 'graph'); this "
@@ -257,7 +261,11 @@ class DeepEval(DeepEvalBackend):
                 f"Unknown nlist_backend '{nlist_backend}'; "
                 "expected 'auto', 'vesin', or 'native'."
             )
-        if self.metadata.get("lower_input_kind") in ("graph", "dpa1_canonical"):
+        if self.metadata.get("lower_input_kind") in (
+            "graph",
+            "dpa1_canonical",
+            "dpa4c_canonical",
+        ):
             if self.neighbor_list is not None:
                 raise ValueError(
                     "neighbor_list only applies to nlist-routed artifacts; use "
@@ -1641,7 +1649,11 @@ class DeepEval(DeepEvalBackend):
         request_defs: list[OutputVariableDef],
         charge_spin: np.ndarray | None = None,
     ) -> tuple[np.ndarray, ...]:
-        if self.metadata.get("lower_input_kind") in ("graph", "dpa1_canonical"):
+        if self.metadata.get("lower_input_kind") in (
+            "graph",
+            "dpa1_canonical",
+            "dpa4c_canonical",
+        ):
             return self._eval_model_graph(
                 coords, cells, atom_types, fparam, aparam, request_defs, charge_spin
             )
@@ -1946,7 +1958,10 @@ class DeepEval(DeepEvalBackend):
             device=DEVICE,
         )
 
-        if self.metadata.get("lower_input_kind") == "dpa1_canonical":
+        if self.metadata.get("lower_input_kind") in (
+            "dpa1_canonical",
+            "dpa4c_canonical",
+        ):
             # The canonical ABI has NO fparam/aparam/charge_spin slots; the
             # export gate (fitting_eligible) rejects such models today, so
             # this is unreachable -- assert it loudly so a future loosening
@@ -1958,10 +1973,10 @@ class DeepEval(DeepEvalBackend):
                 or int(self.metadata.get("dim_chg_spin", 0) or 0) > 0
             ):
                 raise NotImplementedError(
-                    "dpa1_canonical artifacts carry no fparam/aparam/"
+                    "compact canonical artifacts carry no fparam/aparam/"
                     "charge_spin inputs; a model requiring them must not be "
-                    "frozen with lower_kind='dpa1_canonical' (the export "
-                    "eligibility gate should have rejected it)."
+                    "frozen with a canonical lower kind (the export eligibility "
+                    "gate should have rejected it)."
                 )
             from deepmd.dpmodel.utils.neighbor_graph import (
                 NeighborGraph,
@@ -2296,6 +2311,10 @@ class DeepEval(DeepEvalBackend):
             Frame parameters, optional.
         aparam
             Atom parameters, optional.
+        charge_spin
+            Optional frame-level charge and spin conditioning.
+        **kwargs
+            Additional backend-compatible evaluation options.
 
         Returns
         -------
@@ -2367,6 +2386,10 @@ class DeepEval(DeepEvalBackend):
             Frame parameters, optional.
         aparam
             Atom parameters, optional.
+        charge_spin
+            Optional frame-level charge and spin conditioning.
+        **kwargs
+            Additional backend-compatible evaluation options.
 
         Returns
         -------

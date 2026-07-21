@@ -238,6 +238,8 @@ class ArgsPlugin:
             the name of a descriptor
         alias : list[str], optional
             the list of aliases of this descriptor
+        doc : str
+            Documentation associated with the registered descriptor variant.
 
         Returns
         -------
@@ -390,6 +392,94 @@ def descrpt_se_a_args() -> list[Argument]:
         ),
         Argument(
             "set_davg_zero", bool, optional=True, default=False, doc=doc_set_davg_zero
+        ),
+    ]
+
+
+@descrpt_args_plugin.register(
+    "dpa4c",
+    alias=["DPA4C"],
+    doc=doc_only_pt_expt_supported
+    + "DPA4C is the compact and compressible member of the DPA4 family.",
+)
+def descrpt_dpa4c_args() -> list[Argument]:
+    """Return the DPA4C descriptor arguments."""
+    return [
+        Argument(
+            "rcut",
+            float,
+            optional=True,
+            default=6.0,
+            doc="The outer cutoff radius.",
+        ),
+        Argument(
+            "channels",
+            int,
+            optional=True,
+            default=8,
+            doc=(
+                "Channels per packed angular coefficient. Six invariant "
+                "families are exposed, so the descriptor width is `6 * channels`."
+            ),
+        ),
+        Argument(
+            "basis_type",
+            str,
+            optional=True,
+            default="bessel",
+            doc="DPA4 radial basis type: `bessel` or `gaussian`.",
+        ),
+        Argument(
+            "n_radial",
+            int,
+            optional=True,
+            default=16,
+            doc="Number of DPA4 radial basis functions.",
+        ),
+        Argument(
+            "radial_mlp",
+            [list[int], None],
+            optional=True,
+            default=None,
+            doc=(
+                "Hidden widths of the bias-free DPA4 radial network. A value "
+                "of `0` is replaced by `channels`; the output layer is appended."
+            ),
+        ),
+        Argument(
+            "activation_function",
+            str,
+            optional=True,
+            default="silu",
+            doc="Hidden activation used by the DPA4 radial network.",
+        ),
+        Argument(
+            "exclude_types",
+            list[list[int]],
+            optional=True,
+            default=[],
+            doc="Ordered atom-type pairs excluded from the descriptor.",
+        ),
+        Argument(
+            "precision",
+            str,
+            optional=True,
+            default="float32",
+            doc="Floating-point precision of descriptor parameters.",
+        ),
+        Argument(
+            "trainable",
+            bool,
+            optional=True,
+            default=True,
+            doc="Whether descriptor parameters are trainable.",
+        ),
+        Argument(
+            "seed",
+            [int, None],
+            optional=True,
+            default=None,
+            doc="Random seed for parameter initialization.",
         ),
     ]
 

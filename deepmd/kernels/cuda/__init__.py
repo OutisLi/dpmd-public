@@ -21,4 +21,8 @@ Modules
 :mod:`.edge_force_virial`
     Descriptor-agnostic force / atom-virial / per-frame-virial assembly from
     the per-edge energy gradient.
+:mod:`.dpa4c.graph_compress`
+    DPA4C compressed descriptor: radial spline lookup, two packed moment
+    reductions, factorized angular feedback, invariant readout, and analytical
+    edge-vector backward.
 """

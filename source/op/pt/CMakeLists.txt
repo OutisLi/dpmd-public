@@ -27,6 +27,7 @@ if(USE_CUDA_TOOLKIT AND DEEPMD_TORCH_HAS_CUDA)
     OP_SRC
     dpa1_graph_descriptor.cu
     dpa1_graph_compress.cu
+    dpa4c_graph_compress.cu
     graph_fitting.cu
     edge_force_virial.cu
     dpa1_graph_energy_force.cu)
@@ -56,7 +57,7 @@ if(USE_CUDA_TOOLKIT AND DEEPMD_TORCH_HAS_CUDA)
   # libtorch headers require C++17; the CUDA sources must match.
   set_target_properties(deepmd_op_pt PROPERTIES CUDA_STANDARD 17
                                                 CUDA_STANDARD_REQUIRED ON)
-  set_source_files_properties(dpa1_graph_compress.cu
+  set_source_files_properties(dpa1_graph_compress.cu dpa4c_graph_compress.cu
                               PROPERTIES COMPILE_OPTIONS "--use_fast_math")
 endif()
 if(${OP_CXX_ABI_PT} EQUAL ${OP_CXX_ABI})
