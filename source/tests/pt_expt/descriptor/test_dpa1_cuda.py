@@ -1885,7 +1885,8 @@ class TestDpa1GraphCompressEnergyForce(unittest.TestCase):
 
         self.assertEqual(metadata["lower_input_kind"], "dpa1_canonical")
         self.assertEqual(metadata["graph_edge_dtype"], "float32")
-        self.assertEqual(metadata["canonical_index_dtype"], "uint32")
+        self.assertEqual(metadata["canonical_index_dtype"], "auto")
+        self.assertEqual(metadata["canonical_index_storage"], "byte_words")
         self.assertNotIn("graph_index_dtype", metadata)
         self.assertEqual(
             output_keys,
