@@ -48,6 +48,7 @@ def dpa4c_canonical_compress_long_range_energy_force(
     box: torch.Tensor | None,
     atom_bias: torch.Tensor,
     fitting_routes: list[int] | None = None,
+    charge_fitting_routes: list[int] | None = None,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -98,6 +99,9 @@ def dpa4c_canonical_compress_long_range_energy_force(
     fitting_routes
         Fitting-route table of the energy fitting, as for the fused operator
         without a long-range module, or ``None`` for the measured table.
+    charge_fitting_routes
+        Fitting-route table of the charge network, or ``None`` for the
+        measured table.
 
     Returns
     -------
@@ -146,6 +150,11 @@ def dpa4c_canonical_compress_long_range_energy_force(
     if communicator is None:
         communicator = torch.zeros(1, dtype=torch.int64, device="cpu")
     routes = measured_routes(fitting) if fitting_routes is None else fitting_routes
+    charge_routes = (
+        measured_routes(charge_net)
+        if charge_fitting_routes is None
+        else charge_fitting_routes
+    )
     return torch.ops.deepmd.dpa4c_canonical_compress_long_range_energy_force(
         graph.edge_vec,
         graph.source,
@@ -189,6 +198,7 @@ def dpa4c_canonical_compress_long_range_energy_force(
         # AOTInductor proxy executor of torch 2.13 and earlier hands a
         # serialized empty int list to the operator as None.
         list(routes) if routes else None,
+        list(charge_routes) if charge_routes else None,
     )
 
 
@@ -223,8 +233,10 @@ def dpa4c_canonical_long_range_energy_force(
     long_range
         Long-range module whose ``operator_eligible()`` holds.
     graph
-        Canonical graph whose ``source`` has shape ``(E,)`` in ``uint32`` and
-        whose ``destination_row_ptr`` has shape ``(N + 1,)`` in ``int64``.
+        Canonical graph whose ``source`` has shape ``(E,)`` in ``uint32`` or
+        ``int64``, or shape ``(E, W)`` in ``uint8`` for the exported bytes of
+        those words, and whose ``destination_row_ptr`` has shape ``(N + 1,)``
+        in ``int64``. Its source CSR is complete.
     atype
         Flat node atom types with shape ``(N,)``.
     coord
